@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseServer } from "@/lib/supabase/server";
 import { decryptText } from "@/lib/exchange-crypto";
@@ -18,14 +18,14 @@ type ExchangeAccountRow = {
   secret_key_encrypted: string | null;
 };
 
-async function getAuthedUser(req: NextRequest) {
+async function getAuthedUser(req: Request) {
   const authHeader = req.headers.get("authorization");
 
-  if (!authHeader?.startsWith("Bearer ")) {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return null;
   }
 
-  const token = authHeader.replace("Bearer ", "").trim();
+  const token = authHeader.slice(7).trim();
 
   const {
     data: { user },
@@ -39,7 +39,7 @@ async function getAuthedUser(req: NextRequest) {
   return user;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   try {
     const user = await getAuthedUser(req);
 
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
       .eq("is_active", true)
       .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle<ExchangeAccountRow>();
+      .maybeSingle();
 
     if (error) {
       return NextResponse.json(
@@ -73,36 +73,41 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    if (!account) {
+    const typedAccount = account as ExchangeAccountRow | null;
+
+    if (!typedAccount) {
       return NextResponse.json(
         { ok: false, message: "활성화된 업비트 계정이 없습니다." },
         { status: 404 },
       );
     }
 
-    if (!account.access_key_encrypted || !account.secret_key_encrypted) {
+    if (
+      !typedAccount.access_key_encrypted ||
+      !typedAccount.secret_key_encrypted
+    ) {
       return NextResponse.json(
         { ok: false, message: "저장된 업비트 키가 없습니다." },
         { status: 400 },
       );
     }
 
-    const accessKey = decryptText(account.access_key_encrypted);
-    const secretKey = decryptText(account.secret_key_encrypted);
+    const accessKey = decryptText(typedAccount.access_key_encrypted);
+    const secretKey = decryptText(typedAccount.secret_key_encrypted);
 
     const balances = await fetchUpbitBalances(accessKey, secretKey);
 
     const filteredBalances = Array.isArray(balances)
       ? balances.filter((item) => {
-          const balance = Number(item.balance || "0");
-          const locked = Number(item.locked || "0");
+          const balance = Number(item.balance ?? "0");
+          const locked = Number(item.locked ?? "0");
           return balance > 0 || locked > 0;
         })
       : [];
 
     return NextResponse.json({
       ok: true,
-      accountLabel: account.label,
+      accountLabel: typedAccount.label,
       balances: filteredBalances.map((item) => ({
         asset: item.currency,
         free: item.balance,
