@@ -11,11 +11,6 @@ import {
 } from "lightweight-charts";
 import { useExchange } from "@/contexts/exchange-context";
 
-/** =========================
- *  Interval (봉) 설정
- *  - Binance: 아래 전부 지원
- *  - Upbit: 분봉 1/3/5/10/15/30/60/240, 일/주/월 지원 (2h 같은 건 없어서 매핑)
- * ========================= */
 const INTERVALS = [
   "1m",
   "3m",
@@ -29,13 +24,37 @@ const INTERVALS = [
   "1w",
   "1M",
 ] as const;
+
 type Interval = (typeof INTERVALS)[number];
-
 type Exchange = "binance" | "upbit";
+type Currency = "USD" | "KRW";
 
-/** =========================
- *  Binance types
- * ========================= */
+type PaperWallet = {
+  id: string;
+  cash: number;
+  currency: string;
+};
+
+type PaperPosition = {
+  id: string;
+  exchange: string;
+  symbol: string;
+  qty: number;
+  avgPrice: number;
+  invested: number;
+};
+
+type PaperTrade = {
+  id: string;
+  symbol: string;
+  side: string;
+  price: number;
+  qty: number;
+  value: number;
+  pnl?: number | null;
+  createdAt: string;
+};
+
 type MiniTicker = {
   s: string;
   c: string;
@@ -93,9 +112,6 @@ type Ticker24h = {
   q: string;
 };
 
-/** =========================
- *  Upbit types
- * ========================= */
 type UpbitMarket = {
   market: string;
   korean_name: string;
@@ -137,9 +153,6 @@ type UpbitTradeRow = UpbitTrade & {
   _k: string;
 };
 
-/** =========================
- *  Utils
- * ========================= */
 function fmtNum(n: number, d = 2) {
   if (!Number.isFinite(n)) return "-";
   const abs = Math.abs(n);
@@ -160,6 +173,35 @@ function fmtPrice(n: number) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
+function fmtCurrencyByToggle(
+  value: number,
+  base: Currency,
+  view: Currency,
+  usdkrw: number,
+) {
+  if (!Number.isFinite(value)) return "-";
+
+  let converted = value;
+
+  if (base === "USD" && view === "KRW") {
+    converted = value * usdkrw;
+  }
+
+  if (base === "KRW" && view === "USD") {
+    converted = value / usdkrw;
+  }
+
+  if (view === "KRW") {
+    return (
+      "₩" + converted.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    );
+  }
+
+  return (
+    "$" + converted.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  );
+}
+
 function pctClass(pct: number) {
   if (!Number.isFinite(pct)) return "text-slate-200";
   if (pct > 0) return "text-emerald-400";
@@ -170,52 +212,69 @@ function pctClass(pct: number) {
 function wsUrlCombined(streams: string[]) {
   return `wss://stream.binance.com:9443/stream?streams=${streams.join("/")}`;
 }
+
 function wsUrlSingle(stream: string) {
   return `wss://stream.binance.com:9443/ws/${stream}`;
 }
 
-/** =========================
- *  Binance REST: klines
- * ========================= */
-async function fetchBinanceKlines(
-  symbolUpper: string,
-  interval: string,
+function toCcxtSymbol(exchange: Exchange, symbol: string) {
+  if (exchange === "binance") {
+    return symbol.replace("USDT", "/USDT");
+  }
+
+  if (symbol.startsWith("KRW-")) {
+    return symbol.replace("KRW-", "") + "/KRW";
+  }
+
+  return symbol;
+}
+
+async function fetchCcxtOHLCV(
+  exchange: Exchange,
+  symbol: string,
+  interval: Interval,
   limit = 300,
 ) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbolUpper}&interval=${interval}&limit=${limit}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`binance klines failed: ${res.status}`);
-  const rows: any[] = await res.json();
-  return rows.map((r) => ({
-    time: Math.floor(r[0] / 1000) as UTCTimestamp,
-    open: Number(r[1]),
-    high: Number(r[2]),
-    low: Number(r[3]),
-    close: Number(r[4]),
-    volume: Number(r[5]),
+  const ccxtSymbol = toCcxtSymbol(exchange, symbol);
+
+  const res = await fetch(
+    `/api/market/ohlcv?exchange=${exchange}&symbol=${encodeURIComponent(
+      ccxtSymbol,
+    )}&timeframe=${interval}&limit=${limit}`,
+  );
+
+  const data = await res.json();
+
+  if (!res.ok || !data?.success) {
+    throw new Error(data?.error || `ohlcv failed: ${res.status}`);
+  }
+
+  return data.candles.map((c: any) => ({
+    time: Math.floor(c.time / 1000) as UTCTimestamp,
+    open: Number(c.open),
+    high: Number(c.high),
+    low: Number(c.low),
+    close: Number(c.close),
+    volume: Number(c.volume),
   }));
 }
 
-/** =========================
- *  Upbit: WS message parse
- * ========================= */
 async function upbitParseMessage(data: any) {
   if (data instanceof Blob) {
     const buf = await data.arrayBuffer();
     const text = new TextDecoder("utf-8").decode(buf);
     return JSON.parse(text);
   }
+
   if (data instanceof ArrayBuffer) {
     const text = new TextDecoder("utf-8").decode(data);
     return JSON.parse(text);
   }
+
   if (typeof data === "string") return JSON.parse(data);
   return null;
 }
 
-/** =========================
- *  Upbit REST: markets KRW
- * ========================= */
 async function fetchUpbitMarketsKRW() {
   const res = await fetch(
     "https://api.upbit.com/v1/market/all?isDetails=false",
@@ -225,60 +284,6 @@ async function fetchUpbitMarketsKRW() {
   return all.filter((m) => m.market.startsWith("KRW-"));
 }
 
-/** =========================
- *  Upbit REST: candles
- * ========================= */
-function mapUpbitInterval(interval: Interval) {
-  if (interval === "1m") return { kind: "minutes" as const, unit: 1 };
-  if (interval === "3m") return { kind: "minutes" as const, unit: 3 };
-  if (interval === "5m") return { kind: "minutes" as const, unit: 5 };
-  if (interval === "10m") return { kind: "minutes" as const, unit: 10 };
-  if (interval === "15m") return { kind: "minutes" as const, unit: 15 };
-  if (interval === "30m") return { kind: "minutes" as const, unit: 30 };
-  if (interval === "1h") return { kind: "minutes" as const, unit: 60 };
-  if (interval === "4h") return { kind: "minutes" as const, unit: 240 };
-  if (interval === "1d") return { kind: "days" as const };
-  if (interval === "1w") return { kind: "weeks" as const };
-  return { kind: "months" as const };
-}
-
-async function fetchUpbitCandles(
-  market: string,
-  interval: Interval,
-  count = 200,
-) {
-  const m = mapUpbitInterval(interval);
-
-  let url = "";
-  if (m.kind === "minutes") {
-    url = `https://api.upbit.com/v1/candles/minutes/${m.unit}?market=${market}&count=${count}`;
-  } else if (m.kind === "days") {
-    url = `https://api.upbit.com/v1/candles/days?market=${market}&count=${count}`;
-  } else if (m.kind === "weeks") {
-    url = `https://api.upbit.com/v1/candles/weeks?market=${market}&count=${count}`;
-  } else {
-    url = `https://api.upbit.com/v1/candles/months?market=${market}&count=${count}`;
-  }
-
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`upbit candles failed: ${res.status}`);
-  const rows: any[] = await res.json();
-
-  return rows
-    .map((r) => ({
-      time: Math.floor(r.timestamp / 1000) as UTCTimestamp,
-      open: Number(r.opening_price),
-      high: Number(r.high_price),
-      low: Number(r.low_price),
-      close: Number(r.trade_price),
-      volume: Number(r.candle_acc_trade_volume),
-    }))
-    .sort((a, b) => a.time - b.time);
-}
-
-/** =========================
- *  Hook: Binance mini ticker list
- * ========================= */
 function useBinanceMiniTickers(enabled: boolean) {
   const [tickers, setTickers] = useState<MiniTicker[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -310,9 +315,6 @@ function useBinanceMiniTickers(enabled: boolean) {
   return tickers;
 }
 
-/** =========================
- *  UI components
- * ========================= */
 function MetricCard({
   title,
   value,
@@ -401,6 +403,7 @@ function ChartPanel({
       chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
       chart.timeScale().fitContent();
     });
+
     ro.observe(wrapRef.current);
 
     return () => {
@@ -413,43 +416,32 @@ function ChartPanel({
 
   useEffect(() => {
     if (!enabled) return;
+
     let canceled = false;
 
-    (async () => {
+    async function loadCandles() {
       try {
-        if (exchange === "binance") {
-          const data = await fetchBinanceKlines(
-            symbol.toUpperCase(),
-            interval,
-            300,
-          );
-          if (canceled) return;
-          candleRef.current?.setData(
-            data.map((d) => ({
-              time: d.time,
-              open: d.open,
-              high: d.high,
-              low: d.low,
-              close: d.close,
-            })),
-          );
-          chartRef.current?.timeScale().fitContent();
-        } else {
-          const data = await fetchUpbitCandles(symbol, interval, 200);
-          if (canceled) return;
-          candleRef.current?.setData(
-            data.map((d) => ({
-              time: d.time,
-              open: d.open,
-              high: d.high,
-              low: d.low,
-              close: d.close,
-            })),
-          );
-          chartRef.current?.timeScale().fitContent();
-        }
-      } catch {}
-    })();
+        const data = await fetchCcxtOHLCV(exchange, symbol, interval, 300);
+
+        if (canceled) return;
+
+        candleRef.current?.setData(
+          data.map((d: any) => ({
+            time: d.time,
+            open: d.open,
+            high: d.high,
+            low: d.low,
+            close: d.close,
+          })),
+        );
+
+        chartRef.current?.timeScale().fitContent();
+      } catch (err) {
+        console.error("CHART_CCXT_ERROR:", err);
+      }
+    }
+
+    loadCandles();
 
     return () => {
       canceled = true;
@@ -463,6 +455,7 @@ function ChartPanel({
 
     const k = liveKline.k;
     const t = Math.floor(k.t / 1000) as UTCTimestamp;
+
     candleRef.current?.update({
       time: t,
       open: Number(k.o),
@@ -480,10 +473,12 @@ function ChartPanel({
 
     const tick = async () => {
       try {
-        const data = await fetchUpbitCandles(symbol, interval, 200);
+        const data = await fetchCcxtOHLCV(exchange, symbol, interval, 200);
+
         if (stop) return;
+
         candleRef.current?.setData(
-          data.map((d) => ({
+          data.map((d: any) => ({
             time: d.time,
             open: d.open,
             high: d.high,
@@ -491,10 +486,13 @@ function ChartPanel({
             close: d.close,
           })),
         );
-      } catch {}
+      } catch (err) {
+        console.error("UPBIT_CHART_POLLING_ERROR:", err);
+      }
     };
 
     const id = window.setInterval(tick, 10_000);
+
     return () => {
       stop = true;
       window.clearInterval(id);
@@ -506,9 +504,11 @@ function ChartPanel({
       <div className="flex h-12 items-center justify-between border-b border-slate-800/60 px-4">
         <div className="text-sm text-slate-200">{title}</div>
         <div className="text-xs text-slate-400">
-          {exchange === "binance" ? symbol.toUpperCase() : symbol} · {interval}
+          {exchange === "binance" ? symbol.toUpperCase() : symbol} · {interval}{" "}
+          · CCXT
         </div>
       </div>
+
       <div className="h-[520px] p-2">
         <div ref={wrapRef} className="h-full w-full" />
       </div>
@@ -727,7 +727,11 @@ function TradesPanel({
                       >
                         <td className="px-4 py-2 text-slate-400">{time}</td>
                         <td
-                          className={`px-4 py-2 text-right ${side === "buy" ? "text-emerald-300" : "text-rose-300"}`}
+                          className={`px-4 py-2 text-right ${
+                            side === "buy"
+                              ? "text-emerald-300"
+                              : "text-rose-300"
+                          }`}
                         >
                           {fmtPrice(Number(t.p))}
                         </td>
@@ -745,7 +749,11 @@ function TradesPanel({
                       <tr key={t._k} className="border-t border-slate-800/30">
                         <td className="px-4 py-2 text-slate-400">{time}</td>
                         <td
-                          className={`px-4 py-2 text-right ${side === "buy" ? "text-emerald-300" : "text-rose-300"}`}
+                          className={`px-4 py-2 text-right ${
+                            side === "buy"
+                              ? "text-emerald-300"
+                              : "text-rose-300"
+                          }`}
                         >
                           {fmtPrice(t.trade_price)}
                         </td>
@@ -785,15 +793,19 @@ function TradesPanel({
   );
 }
 
-/** =========================
- *  Dashboard Page
- * ========================= */
 export default function DashboardPage() {
   const { exchange } = useExchange();
   const ex = exchange as Exchange;
 
   const [interval, setInterval] = useState<Interval>("1m");
   const [search, setSearch] = useState("");
+  const [currency, setCurrency] = useState<Currency>("USD");
+  const [usdkrw, setUsdkrw] = useState(1300);
+  const [paperWallet, setPaperWallet] = useState<PaperWallet | null>(null);
+  const [paperPositions, setPaperPositions] = useState<PaperPosition[]>([]);
+  const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
+  const [orderAmount, setOrderAmount] = useState("100");
+  const [isOrderLoading, setIsOrderLoading] = useState(false);
 
   const [symbolByEx, setSymbolByEx] = useState<Record<Exchange, string>>({
     binance: "BTCUSDT",
@@ -801,10 +813,112 @@ export default function DashboardPage() {
   });
 
   const symbol = symbolByEx[ex];
+
   const symbolUpper = ex === "binance" ? symbol.toUpperCase() : symbol;
   const symbolLower = ex === "binance" ? symbol.toLowerCase() : symbol;
 
-  /** ===== Binance: right list ===== */
+  useEffect(() => {
+    async function loadRate() {
+      useEffect(() => {
+        loadPaperPortfolio();
+      }, []);
+
+      try {
+        const res = await fetch("/api/market/usdkrw");
+        const data = await res.json();
+        setUsdkrw(Number(data.usdkrw || 1300));
+      } catch {
+        setUsdkrw(1300);
+      }
+    }
+
+    loadRate();
+  }, []);
+
+  function getAccessToken() {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem("token");
+  }
+
+  async function loadPaperPortfolio() {
+    try {
+      const token = getAccessToken();
+
+      if (!token) return;
+
+      const res = await fetch("/api/paper/portfolio", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) return;
+
+      setPaperWallet(data.wallet || null);
+      setPaperPositions(Array.isArray(data.positions) ? data.positions : []);
+      setPaperTrades(Array.isArray(data.trades) ? data.trades : []);
+    } catch (err) {
+      console.error("LOAD_PAPER_PORTFOLIO_ERROR:", err);
+    }
+  }
+
+  async function handlePaperOrder(side: "BUY" | "SELL") {
+    try {
+      setIsOrderLoading(true);
+
+      const token = getAccessToken();
+
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        return;
+      }
+
+      const amount = Number(orderAmount);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        alert("주문 금액을 올바르게 입력해 주세요.");
+        return;
+      }
+
+      if (ex !== "binance") {
+        alert("현재 가상매매는 Binance 심볼만 지원합니다.");
+        return;
+      }
+
+      const res = await fetch("/api/paper/order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          exchange: "binance",
+          symbol: symbolUpper,
+          side,
+          amount,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "주문 실패");
+      }
+
+      alert(side === "BUY" ? "가상 매수 완료" : "가상 매도 완료");
+
+      await loadPaperPortfolio();
+    } catch (err) {
+      console.error("PAPER_ORDER_ERROR:", err);
+      alert("가상 주문 중 오류가 발생했습니다.");
+    } finally {
+      setIsOrderLoading(false);
+    }
+  }
+
   const binanceMiniTickers = useBinanceMiniTickers(ex === "binance");
 
   const binanceMarketList = useMemo(() => {
@@ -824,7 +938,6 @@ export default function DashboardPage() {
     return filtered.filter((x) => x.symbol.includes(q)).slice(0, 150);
   }, [binanceMiniTickers, search]);
 
-  /** ===== Binance: symbol realtime ===== */
   const [binanceTicker24h, setBinanceTicker24h] = useState<Ticker24h | null>(
     null,
   );
@@ -832,6 +945,30 @@ export default function DashboardPage() {
   const [binanceBookTicker, setBinanceBookTicker] = useState<any | null>(null);
   const [binanceTrades, setBinanceTrades] = useState<AggTrade[]>([]);
   const [binanceLiveKline, setBinanceLiveKline] = useState<Kline | null>(null);
+  const activePaperPosition = paperPositions.find(
+    (position) =>
+      position.exchange === "binance" && position.symbol === symbolUpper,
+  );
+
+  const currentPaperPrice =
+    ex === "binance" && binanceTicker24h ? Number(binanceTicker24h.c || 0) : 0;
+
+  const paperPositionValue =
+    activePaperPosition && currentPaperPrice > 0
+      ? activePaperPosition.qty * currentPaperPrice
+      : 0;
+
+  const paperPnl =
+    activePaperPosition && currentPaperPrice > 0
+      ? paperPositionValue - activePaperPosition.invested
+      : 0;
+
+  const paperPnlPct =
+    activePaperPosition && activePaperPosition.invested > 0
+      ? (paperPnl / activePaperPosition.invested) * 100
+      : 0;
+
+  const paperTotalEquity = (paperWallet?.cash || 0) + paperPositionValue;
 
   useEffect(() => {
     setBinanceTicker24h(null);
@@ -873,7 +1010,6 @@ export default function DashboardPage() {
     return () => ws.close();
   }, [ex, symbolLower, interval]);
 
-  /** ===== Upbit: markets + ticker map for list ===== */
   const [upbitMarkets, setUpbitMarkets] = useState<UpbitMarket[]>([]);
   const [upbitTickerMap, setUpbitTickerMap] = useState<
     Record<string, UpbitTicker>
@@ -954,19 +1090,16 @@ export default function DashboardPage() {
       .slice(0, 150);
   }, [upbitMarkets, upbitTickerMap, search]);
 
-  /** ===== Upbit: selected symbol streams ===== */
   const [upbitTicker, setUpbitTicker] = useState<UpbitTicker | null>(null);
   const [upbitOrderbook, setUpbitOrderbook] = useState<UpbitOrderbook | null>(
     null,
   );
   const [upbitTrades, setUpbitTrades] = useState<UpbitTradeRow[]>([]);
-  const upbitTradeSeqRef = useRef(0);
 
   useEffect(() => {
     setUpbitTicker(null);
     setUpbitOrderbook(null);
     setUpbitTrades([]);
-    upbitTradeSeqRef.current = 0;
 
     if (ex !== "upbit") return;
 
@@ -1024,7 +1157,6 @@ export default function DashboardPage() {
     return () => ws.close();
   }, [ex, symbol]);
 
-  /** ===== Metrics ===== */
   const metrics = useMemo(() => {
     if (ex === "binance") {
       const last = binanceTicker24h ? Number(binanceTicker24h.c) : NaN;
@@ -1059,7 +1191,8 @@ export default function DashboardPage() {
     };
   }, [ex, binanceTicker24h, upbitTicker]);
 
-  /** ===== UI ===== */
+  const baseCurrency: Currency = ex === "binance" ? "USD" : "KRW";
+
   return (
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-3">
@@ -1076,7 +1209,30 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* mobile */}
+          <div className="rounded-xl border border-slate-800/70 bg-[#0F1A2A]/80 p-1">
+            <button
+              onClick={() => setCurrency("USD")}
+              className={`rounded-lg px-3 py-1.5 text-xs ${
+                currency === "USD"
+                  ? "bg-white/15 text-white"
+                  : "text-slate-400 hover:bg-white/10"
+              }`}
+            >
+              USD
+            </button>
+
+            <button
+              onClick={() => setCurrency("KRW")}
+              className={`rounded-lg px-3 py-1.5 text-xs ${
+                currency === "KRW"
+                  ? "bg-white/15 text-white"
+                  : "text-slate-400 hover:bg-white/10"
+              }`}
+            >
+              KRW
+            </button>
+          </div>
+
           <div className="md:hidden w-full">
             <select
               value={interval}
@@ -1095,7 +1251,6 @@ export default function DashboardPage() {
             </select>
           </div>
 
-          {/* desktop */}
           <div className="hidden md:block">
             <div className="max-w-full overflow-x-auto rounded-xl border border-slate-800/70 bg-[#0F1A2A]/80 p-1">
               <div className="flex items-center gap-1">
@@ -1122,7 +1277,12 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <MetricCard
           title="Last Price"
-          value={fmtPrice(metrics.last)}
+          value={fmtCurrencyByToggle(
+            metrics.last,
+            baseCurrency,
+            currency,
+            usdkrw,
+          )}
           sub="Selected symbol"
         />
         <MetricCard
@@ -1133,8 +1293,24 @@ export default function DashboardPage() {
           valueClass={pctClass(metrics.pct)}
           sub="Percent"
         />
-        <MetricCard title="24h High" value={fmtPrice(metrics.high)} />
-        <MetricCard title="24h Low" value={fmtPrice(metrics.low)} />
+        <MetricCard
+          title="24h High"
+          value={fmtCurrencyByToggle(
+            metrics.high,
+            baseCurrency,
+            currency,
+            usdkrw,
+          )}
+        />
+        <MetricCard
+          title="24h Low"
+          value={fmtCurrencyByToggle(
+            metrics.low,
+            baseCurrency,
+            currency,
+            usdkrw,
+          )}
+        />
         <MetricCard
           title="24h Quote Vol"
           value={fmtNum(metrics.vol, 2)}
@@ -1186,6 +1362,7 @@ export default function DashboardPage() {
                   <th className="px-4 py-2 text-right font-medium">24h%</th>
                 </tr>
               </thead>
+
               <tbody>
                 {ex === "binance"
                   ? binanceMarketList.map((m) => (
@@ -1277,8 +1454,158 @@ export default function DashboardPage() {
 
           {ex === "upbit" && (
             <div className="border-t border-slate-800/50 px-4 py-3 text-[11px] text-slate-500">
-              * 업비트 KRW 마켓은 브라우저 부담 때문에 기본 120개만 구독해둠.
-              (원하면 늘려줄게)
+              * 업비트 KRW 마켓은 브라우저 부담 때문에 기본 120개만 구독.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-800/70 bg-[#0F1A2A]/80 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold text-slate-100">
+              Paper Trading
+            </div>
+            <div className="mt-1 text-xs text-slate-400">
+              현재 선택된 심볼 기준 가상 매매
+            </div>
+          </div>
+
+          <button
+            onClick={loadPaperPortfolio}
+            className="h-9 rounded-xl border border-slate-700 bg-[#101C2E] px-3 text-xs text-slate-200"
+          >
+            새로고침
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MetricCard
+            title="Paper Cash"
+            value={
+              paperWallet
+                ? `$${Number(paperWallet.cash).toLocaleString()}`
+                : "미발급"
+            }
+            sub="settings에서 발급"
+          />
+
+          <MetricCard
+            title="Position Value"
+            value={`$${paperPositionValue.toLocaleString(undefined, {
+              maximumFractionDigits: 2,
+            })}`}
+            sub={activePaperPosition?.symbol || "no position"}
+          />
+
+          <MetricCard
+            title="Paper PnL"
+            value={`${paperPnlPct >= 0 ? "+" : ""}${paperPnlPct.toFixed(2)}%`}
+            valueClass={pctClass(paperPnlPct)}
+            sub={`${paperPnl >= 0 ? "+" : ""}$${paperPnl.toLocaleString(
+              undefined,
+              {
+                maximumFractionDigits: 2,
+              },
+            )}`}
+          />
+
+          <MetricCard
+            title="Total Equity"
+            value={`$${paperTotalEquity.toLocaleString(undefined, {
+              maximumFractionDigits: 2,
+            })}`}
+            sub="cash + position"
+          />
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+          <div className="rounded-xl border border-slate-800 bg-[#0B1420] p-3">
+            <div className="text-xs text-slate-400">Order Symbol</div>
+            <div className="mt-1 text-lg font-semibold text-slate-100">
+              {symbolUpper}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              현재는 Binance USDT 심볼만 주문 가능
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-[#0B1420] p-3">
+            <label className="text-xs text-slate-400">Order Amount</label>
+            <input
+              type="number"
+              min={1}
+              value={orderAmount}
+              onChange={(e) => setOrderAmount(e.target.value)}
+              className="mt-2 h-10 w-full rounded-xl border border-slate-800 bg-[#101C2E] px-3 text-sm text-slate-100 outline-none"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => handlePaperOrder("BUY")}
+              disabled={isOrderLoading || !paperWallet}
+              className="h-full min-h-16 rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-sm font-semibold text-emerald-200 disabled:opacity-50"
+            >
+              가상 매수
+            </button>
+
+            <button
+              onClick={() => handlePaperOrder("SELL")}
+              disabled={isOrderLoading || !paperWallet}
+              className="h-full min-h-16 rounded-xl border border-rose-500/30 bg-rose-500/15 text-sm font-semibold text-rose-200 disabled:opacity-50"
+            >
+              가상 매도
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-800 bg-[#0B1420] p-3">
+          <div className="mb-3 text-sm font-semibold text-slate-100">
+            Current Paper Position
+          </div>
+
+          {activePaperPosition ? (
+            <div className="grid grid-cols-2 gap-3 text-sm lg:grid-cols-5">
+              <div>
+                <div className="text-xs text-slate-500">Symbol</div>
+                <div className="mt-1 text-slate-100">
+                  {activePaperPosition.symbol}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-500">Qty</div>
+                <div className="mt-1 text-slate-100">
+                  {activePaperPosition.qty.toFixed(6)}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-500">Avg Price</div>
+                <div className="mt-1 text-slate-100">
+                  ${activePaperPosition.avgPrice.toLocaleString()}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-500">Invested</div>
+                <div className="mt-1 text-slate-100">
+                  ${activePaperPosition.invested.toLocaleString()}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-500">PnL</div>
+                <div className={`mt-1 font-semibold ${pctClass(paperPnlPct)}`}>
+                  {paperPnlPct >= 0 ? "+" : ""}
+                  {paperPnlPct.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500">
+              현재 선택된 심볼의 가상 포지션이 없습니다.
             </div>
           )}
         </div>
@@ -1293,6 +1620,7 @@ export default function DashboardPage() {
           binanceBookTicker={binanceBookTicker}
           upbitOrderbook={upbitOrderbook}
         />
+
         <TradesPanel
           exchange={ex}
           symbol={symbol}
@@ -1303,8 +1631,8 @@ export default function DashboardPage() {
       </div>
 
       <div className="text-xs text-slate-500">
-        * Binance는 public WS + REST, Upbit은 ticker/orderbook/trade WS + 캔들
-        REST(폴링)로 구성.
+        * 캔들 차트는 CCXT API, 실시간 가격/호가/체결은 거래소 WebSocket으로
+        구성.
       </div>
     </div>
   );

@@ -17,7 +17,7 @@ const ICON = {
   settings: "/icons/icon7.png",
   bell: "/icons/icon8.png",
   dashboard: "/icons/icon1.png",
-  excution: "/icons/icon2.png",
+  execution: "/icons/icon2.png",
   weeklyReport: "/icons/icon17.png",
   home: "/icons/icon13.png",
 } as const;
@@ -27,14 +27,14 @@ type SideItem = { key: string; label: string; icon: string };
 const SIDE_ITEMS: SideItem[] = [
   { key: "home", label: "Home", icon: ICON.home },
   { key: "dashboard", label: "Dashboard", icon: ICON.dashboard },
-  { key: "excution", label: "Excution", icon: ICON.excution },
+  { key: "execution", label: "Execution", icon: ICON.execution },
   { key: "weeklyReport", label: "WeeklyReport", icon: ICON.weeklyReport },
   { key: "settings", label: "Settings", icon: ICON.settings },
 ];
 
 const MOBILE_ITEMS: SideItem[] = [
   { key: "dashboard", label: "Dashboard", icon: ICON.dashboard },
-  { key: "excution", label: "Excution", icon: ICON.excution },
+  { key: "execution", label: "Execution", icon: ICON.execution },
   { key: "home", label: "Home", icon: ICON.home },
   { key: "weeklyReport", label: "WeeklyReport", icon: ICON.weeklyReport },
   { key: "settings", label: "Settings", icon: ICON.settings },

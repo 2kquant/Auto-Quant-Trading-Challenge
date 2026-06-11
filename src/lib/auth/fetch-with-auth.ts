@@ -1,19 +1,10 @@
-import { supabase } from "@/lib/supabase/client";
-
 export async function fetchWithAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
 ) {
-  const {
-    data: { session },
-    error,
-  } = await supabase.auth.getSession();
+  const token = localStorage.getItem("token");
 
-  if (error) {
-    throw error;
-  }
-
-  if (!session?.access_token) {
+  if (!token) {
     throw new Error("로그인이 필요합니다.");
   }
 
@@ -21,7 +12,7 @@ export async function fetchWithAuth(
     ...init,
     headers: {
       ...(init?.headers || {}),
-      Authorization: `Bearer ${session.access_token}`,
+      Authorization: `Bearer ${token}`,
     },
   });
 }

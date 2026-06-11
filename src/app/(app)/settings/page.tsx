@@ -1,113 +1,285 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchWithAuth } from "@/lib/auth/fetch-with-auth";
 
 type ExchangeType = "upbit" | "binance";
 
-type ExchangeAccount = {
-  id: string;
+type BalanceResponse = {
   exchange: ExchangeType;
-  label: string | null;
-  memo: string | null;
-  is_active: boolean;
-  created_at: string;
+  balance?: {
+    free?: Record<string, number>;
+    used?: Record<string, number>;
+    total?: Record<string, number>;
+  };
+  error?: boolean;
 };
-
-type BalanceItem = {
-  asset: string;
-  free: string;
-  locked: string;
-};
-
-async function parseJsonSafely(res: Response) {
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("JSON parse error");
-  }
-}
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<"exchange" | "strategy" | "notification">(
     "exchange",
   );
 
-  // ===== 상단 고정 유저 =====
-  const [userEmail, setUserEmail] = useState("user@email.com");
+  const [userEmail, setUserEmail] = useState("");
 
-  // ===== 거래소 =====
   const [exchange, setExchange] = useState<ExchangeType>("upbit");
-  const [label, setLabel] = useState("");
-  const [accessKey, setAccessKey] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
-  const [accounts, setAccounts] = useState<ExchangeAccount[]>([]);
-  const [balances, setBalances] = useState<BalanceItem[]>([]);
 
-  // ===== 퀀트 =====
+  const [balances, setBalances] = useState<BalanceResponse[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isBalanceLoading, setIsBalanceLoading] = useState(false);
+
   const [riskLevel, setRiskLevel] = useState("medium");
   const [autoTrading, setAutoTrading] = useState(false);
-
-  // ===== 알림 =====
   const [telegram, setTelegram] = useState("");
 
-  async function loadAccounts() {
-    const res = await fetchWithAuth("/api/exchange-accounts");
-    const result = await parseJsonSafely(res);
-    setAccounts(result?.accounts ?? []);
+  const [paperWallet, setPaperWallet] = useState<any>(null);
+  const [isWalletLoading, setIsWalletLoading] = useState(false);
+
+  async function loadPaperWallet() {
+    try {
+      const token = getAccessToken();
+
+      if (!token) return;
+
+      const res = await fetch("/api/paper/wallet", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        return;
+      }
+
+      setPaperWallet(data.wallet || null);
+    } catch (err) {
+      console.error("LOAD_PAPER_WALLET_ERROR:", err);
+    }
+  }
+
+  async function handleCreatePaperWallet() {
+    try {
+      setIsWalletLoading(true);
+
+      const token = getAccessToken();
+
+      if (!token) {
+        alert("로그인 필요");
+        return;
+      }
+
+      const res = await fetch("/api/paper/wallet", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          cash: 10000,
+          currency: "USDT",
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "가상머니 발급 실패");
+      }
+
+      alert("가상머니 발급 완료");
+
+      await loadPaperWallet();
+    } catch (err) {
+      console.error(err);
+      alert("가상머니 발급 실패");
+    } finally {
+      setIsWalletLoading(false);
+    }
+  }
+
+  function getAccessToken() {
+    return localStorage.getItem("token");
+  }
+
+  function loadUser() {
+    const user = localStorage.getItem("user");
+
+    if (!user) return;
+
+    try {
+      const parsed = JSON.parse(user);
+      setUserEmail(parsed?.email || "");
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   async function loadBalances() {
-    const res = await fetchWithAuth("/api/upbit/balances");
-    const result = await parseJsonSafely(res);
-    setBalances(result?.balances ?? []);
-  }
+    try {
+      const token = getAccessToken();
 
-  async function handleSaveExchange(e: any) {
+      if (!token) {
+        setBalances([]);
+        return;
+      }
+
+      const res = await fetch("/api/exchange/balance", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        setBalances([]);
+        return;
+      }
+
+      const data = await res.json();
+
+      setBalances(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("BALANCE_FETCH_ERROR:", err);
+      setBalances([]);
+    }
+  }
+  async function handleSaveExchange(e: React.FormEvent) {
     e.preventDefault();
 
-    await fetchWithAuth("/api/exchange-accounts", {
-      method: "POST",
-      body: JSON.stringify({
-        exchange,
-        label,
-        accessKey,
-        secretKey,
-      }),
-    });
+    if (!apiKey || !secretKey) {
+      alert("API Key와 Secret Key를 입력해 주세요.");
+      return;
+    }
 
-    setLabel("");
-    setAccessKey("");
-    setSecretKey("");
+    try {
+      setIsSaving(true);
 
-    await loadAccounts();
+      const token = getAccessToken();
+
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        return;
+      }
+
+      const res = await fetch("/api/exchange/save-key", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          exchange,
+          apiKey,
+          secretKey,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "키 저장 실패");
+      }
+
+      alert(`${exchange.toUpperCase()} API 키 저장 완료`);
+
+      setApiKey("");
+      setSecretKey("");
+
+      await loadBalances();
+    } catch (err) {
+      console.error("SAVE_EXCHANGE_ERROR:", err);
+      alert("거래소 키 저장 중 오류가 발생했습니다.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   useEffect(() => {
-    loadAccounts();
+    loadUser();
     loadBalances();
+    loadPaperWallet();
   }, []);
+
+  const renderBalanceRows = (item: BalanceResponse) => {
+    const total = item.balance?.total || {};
+    const free = item.balance?.free || {};
+    const used = item.balance?.used || {};
+
+    const rows = Object.keys(total)
+      .filter((asset) => Number(total[asset]) > 0)
+      .slice(0, 20);
+
+    if (item.error) {
+      return (
+        <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm text-rose-200">
+          API 키가 잘못됐거나 거래소 권한이 부족합니다.
+        </div>
+      );
+    }
+
+    if (rows.length === 0) {
+      return (
+        <div className="mt-3 rounded-xl border border-slate-800 bg-[#0B1420] p-3 text-sm text-slate-500">
+          표시할 잔고가 없습니다.
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-3 overflow-hidden rounded-xl border border-slate-800">
+        <div className="grid grid-cols-4 bg-[#0B1420] px-3 py-2 text-xs text-slate-500">
+          <div>자산</div>
+          <div className="text-right">사용가능</div>
+          <div className="text-right">주문중</div>
+          <div className="text-right">총수량</div>
+        </div>
+
+        {rows.map((asset) => (
+          <div
+            key={asset}
+            className="grid grid-cols-4 border-t border-slate-800 px-3 py-2 text-sm"
+          >
+            <div className="font-semibold text-slate-100">{asset}</div>
+
+            <div className="text-right text-slate-300">
+              {Number(free[asset] || 0).toLocaleString()}
+            </div>
+
+            <div className="text-right text-slate-400">
+              {Number(used[asset] || 0).toLocaleString()}
+            </div>
+
+            <div className="text-right text-emerald-300">
+              {Number(total[asset] || 0).toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#0B1420] text-white">
-      {/* ================= 상단 고정 (내정보) ================= */}
-      <div className="sticky top-0 z-50 bg-[#0B1420] border-b border-slate-800 px-6 py-4">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
+      <div className="sticky top-0 z-50 border-b border-slate-800 bg-[#0B1420]/95 px-6 py-4 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div>
             <div className="text-sm text-slate-400">로그인 계정</div>
-            <div className="text-lg font-semibold">{userEmail}</div>
+
+            <div className="text-lg font-semibold">
+              {userEmail || "로그인 정보 없음"}
+            </div>
           </div>
 
-          <button className="h-10 px-4 rounded-xl bg-[#101C2E] border border-slate-700 text-sm">
+          <button className="h-10 rounded-xl border border-slate-700 bg-[#101C2E] px-4 text-sm">
             비밀번호 변경
           </button>
         </div>
       </div>
-
-      <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
-        {/* ================= 탭 버튼 (아래로 이동) ================= */}
+      <div className="mx-auto max-w-5xl space-y-6 px-6 py-6">
         <div className="flex gap-2">
           {[
             ["exchange", "거래소"],
@@ -117,10 +289,10 @@ export default function SettingsPage() {
             <button
               key={key}
               onClick={() => setTab(key as any)}
-              className={`px-4 h-10 rounded-xl text-sm ${
+              className={`h-10 rounded-xl px-4 text-sm transition ${
                 tab === key
-                  ? "bg-emerald-500/20 border border-emerald-400"
-                  : "bg-[#101C2E]"
+                  ? "border border-emerald-400 bg-emerald-500/20 text-emerald-200"
+                  : "border border-slate-800 bg-[#101C2E] text-slate-400 hover:text-slate-200"
               }`}
             >
               {label}
@@ -128,84 +300,149 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {/* ================= 거래소 ================= */}
         {tab === "exchange" && (
-          <div className="space-y-6">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
             <form
               onSubmit={handleSaveExchange}
-              className="bg-[#101C2E] p-5 rounded-xl space-y-4"
+              className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 shadow-[0_10px_30px_rgba(0,0,0,0.35)] lg:col-span-2"
             >
-              <h2 className="font-semibold">API 연결</h2>
+              <h2 className="text-lg font-semibold text-slate-100">API 연결</h2>
 
-              <select
-                value={exchange}
-                onChange={(e) => setExchange(e.target.value as any)}
-                className="w-full h-10 bg-[#0B1420] px-3 rounded"
-              >
-                <option value="upbit">Upbit</option>
-                <option value="binance">Binance</option>
-              </select>
+              <p className="mt-1 text-sm text-slate-500">
+                저장 후 자동으로 잔고를 조회합니다.
+              </p>
 
-              <input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="계정 이름"
-                className="w-full h-10 bg-[#0B1420] px-3 rounded"
-              />
+              <div className="mt-5 space-y-4">
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">
+                    거래소
+                  </label>
 
-              <input
-                value={accessKey}
-                onChange={(e) => setAccessKey(e.target.value)}
-                placeholder="Access Key"
-                className="w-full h-10 bg-[#0B1420] px-3 rounded"
-              />
+                  <select
+                    value={exchange}
+                    onChange={(e) =>
+                      setExchange(e.target.value as ExchangeType)
+                    }
+                    className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none"
+                  >
+                    <option value="upbit">Upbit</option>
+                    <option value="binance">Binance</option>
+                  </select>
+                </div>
 
-              <input
-                value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                placeholder="Secret Key"
-                className="w-full h-10 bg-[#0B1420] px-3 rounded"
-              />
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">
+                    API Key
+                  </label>
 
-              <button className="w-full h-10 bg-emerald-500/20 rounded">
-                저장
-              </button>
+                  <input
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Access / API Key"
+                    className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none placeholder:text-slate-600 focus:border-emerald-400/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">
+                    Secret Key
+                  </label>
+
+                  <input
+                    value={secretKey}
+                    onChange={(e) => setSecretKey(e.target.value)}
+                    type="password"
+                    placeholder="Secret Key"
+                    className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none placeholder:text-slate-600 focus:border-emerald-400/50"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-100">
+                  처음에는 거래소 API 권한을 조회 전용으로 테스트하고, 매매
+                  권한은 주문 API 검증 후 켜는 걸 추천합니다.
+                </div>
+
+                <button
+                  disabled={isSaving}
+                  className="h-11 w-full rounded-xl border border-emerald-400/30 bg-emerald-500/15 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
+                >
+                  {isSaving ? "저장 중..." : "API 키 저장"}
+                </button>
+              </div>
             </form>
 
-            <div className="bg-[#101C2E] p-5 rounded-xl">
-              {accounts.map((a) => (
-                <div key={a.id}>
-                  {a.label} ({a.exchange})
-                </div>
-              ))}
-            </div>
+            <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 shadow-[0_10px_30px_rgba(0,0,0,0.35)] lg:col-span-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-100">
+                    거래소 잔고
+                  </h2>
 
-            <div className="bg-[#101C2E] p-5 rounded-xl">
-              {balances.map((b, i) => (
-                <div key={i}>
-                  {b.asset} - {b.free}
+                  <p className="mt-1 text-sm text-slate-500">
+                    저장된 API 키 기준으로 CCXT에서 불러온 잔고입니다.
+                  </p>
                 </div>
-              ))}
+
+                <button
+                  onClick={loadBalances}
+                  disabled={isBalanceLoading}
+                  className="h-10 rounded-xl border border-slate-700 bg-[#0B1420] px-4 text-sm text-slate-200 hover:bg-slate-900 disabled:opacity-60"
+                >
+                  {isBalanceLoading ? "조회 중..." : "새로고침"}
+                </button>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {balances.length === 0 && (
+                  <div className="rounded-xl border border-slate-800 bg-[#0B1420] p-4 text-sm text-slate-500">
+                    아직 저장된 거래소 키가 없거나 잔고를 불러오지 못했습니다.
+                  </div>
+                )}
+
+                {balances.map((item, index) => (
+                  <div
+                    key={`${item.exchange}-${index}`}
+                    className="rounded-2xl border border-slate-800 bg-[#0B1420]/70 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="text-base font-semibold text-slate-100">
+                        {item.exchange.toUpperCase()}
+                      </div>
+
+                      <span
+                        className={`rounded-lg border px-2 py-1 text-xs ${
+                          item.error
+                            ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+                            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                        }`}
+                      >
+                        {item.error ? "Error" : "Connected"}
+                      </span>
+                    </div>
+
+                    {renderBalanceRows(item)}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
-        {/* ================= 퀀트 ================= */}
         {tab === "strategy" && (
-          <div className="bg-[#101C2E] p-5 rounded-xl space-y-4">
-            <h2>퀀트 설정</h2>
+          <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
+            <h2 className="text-lg font-semibold">퀀트 설정</h2>
 
             <select
               value={riskLevel}
               onChange={(e) => setRiskLevel(e.target.value)}
-              className="w-full h-10 bg-[#0B1420]"
+              className="h-11 w-full rounded-xl bg-[#0B1420] px-3"
             >
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
             </select>
 
-            <label className="flex gap-2">
+            <label className="flex gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
                 checked={autoTrading}
@@ -216,19 +453,49 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* ================= 알림 ================= */}
         {tab === "notification" && (
-          <div className="bg-[#101C2E] p-5 rounded-xl space-y-4">
-            <h2>알림</h2>
+          <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
+            <h2 className="text-lg font-semibold">알림</h2>
 
             <input
               value={telegram}
               onChange={(e) => setTelegram(e.target.value)}
               placeholder="텔레그램 ID"
-              className="w-full h-10 bg-[#0B1420]"
+              className="h-11 w-full rounded-xl bg-[#0B1420] px-3"
             />
           </div>
         )}
+      </div>
+      <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">
+              가상 투자 계좌
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              자동매매 및 테스트용 Paper Trading 계좌
+            </p>
+          </div>
+
+          <button
+            onClick={handleCreatePaperWallet}
+            disabled={isWalletLoading}
+            className="h-10 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-4 text-sm font-semibold text-emerald-200"
+          >
+            {isWalletLoading ? "발급 중..." : "가상머니 발급"}
+          </button>
+        </div>
+
+        <div className="mt-5 rounded-xl border border-slate-800 bg-[#0B1420] p-4">
+          <div className="text-sm text-slate-400">보유 가상머니</div>
+
+          <div className="mt-2 text-3xl font-bold text-emerald-300">
+            {paperWallet
+              ? `${Number(paperWallet.cash).toLocaleString()} ${paperWallet.currency}`
+              : "미발급"}
+          </div>
+        </div>
       </div>
     </div>
   );

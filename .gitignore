@@ -39,3 +39,26 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# AI model files
+*.pkl
+*.joblib
+
+# Local env
+.env
+.env.local
+
+# Local test files
+test.py
+*_test.py
+
+# Local AI server folders
+ai-server/
+ai-server2/

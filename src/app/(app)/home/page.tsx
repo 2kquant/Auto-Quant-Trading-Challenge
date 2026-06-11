@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 function Card({
   title,
@@ -15,14 +15,14 @@ function Card({
 }) {
   return (
     <section
-      className={`rounded-2xl border border-slate-800/70 bg-[#0F1A2A]/80 overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.35)] ${className}`}
+      className={`overflow-hidden rounded-2xl border border-slate-800/70 bg-[#0F1A2A]/80 shadow-[0_10px_30px_rgba(0,0,0,0.35)] ${className}`}
     >
-      <div className="h-11 px-4 flex items-center justify-between border-b border-slate-800/70">
+      <div className="flex h-11 items-center justify-between border-b border-slate-800/70 px-4">
         <div className="text-sm font-medium text-slate-100">{title}</div>
         {right}
       </div>
 
-      <div className="p-4 h-[calc(100%-44px)]">{children}</div>
+      <div className="h-[calc(100%-44px)] p-4">{children}</div>
     </section>
   );
 }
@@ -53,15 +53,18 @@ function KpiCard({
         : "border-slate-700/60 bg-slate-800/20 text-slate-200";
 
   return (
-    <div className="rounded-2xl border border-slate-800/70 bg-[#0F1A2A]/80 overflow-hidden">
-      <div className="h-11 px-4 flex items-center justify-between border-b border-slate-800/70">
+    <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-[#0F1A2A]/80">
+      <div className="flex h-11 items-center justify-between border-b border-slate-800/70 px-4">
         <span className="text-sm text-slate-400">{label}</span>
-        <span className={`text-[11px] px-2 py-1 rounded-lg border ${chipCls}`}>
+
+        <span className={`rounded-lg border px-2 py-1 text-[11px] ${chipCls}`}>
           24H
         </span>
       </div>
+
       <div className="p-4">
         <div className={`text-2xl font-semibold ${valueCls}`}>{value}</div>
+
         {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
       </div>
     </div>
@@ -69,61 +72,85 @@ function KpiCard({
 }
 
 export default function HomePage() {
+  const [balances, setBalances] = useState<any[]>([]);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchBalances = async () => {
+      try {
+        setBalanceLoading(true);
+
+        const token = localStorage.getItem("token");
+
+        if (!token) return;
+
+        const res = await fetch("/api/exchange/balance", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        const data = await res.json();
+
+        setBalances(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error("BALANCE_ERROR:", err);
+      } finally {
+        setBalanceLoading(false);
+      }
+    };
+
+    fetchBalances();
+  }, []);
+
   return (
-    /**
-     * ✅ 스크롤 방지 풀스크린 분배
-     * - lg 이상에서만 "뷰포트 - 헤더 - (wrapper padding)" 높이를 고정
-     * - 아래 그리드 영역은 flex-1로 남은 공간을 정확히 씀
-     *
-     * 전제:
-     * - AppLayout 헤더 높이를 h-16(64px)로 고정
-     * - children wrapper는 py-4 (위아래 32px)
-     */
     <div className="flex flex-col gap-4 lg:h-[calc(100vh-64px-32px)] lg:overflow-hidden">
-      {/* Top: Title + quick filters (고정) */}
       <div className="shrink-0 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-slate-100">Home</h1>
+
           <p className="text-sm text-slate-500">
             자동매매 현황 요약 & 신호 모니터링
           </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button className="h-10 px-3 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+          <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 px-3 text-sm text-slate-200 hover:bg-slate-900/40">
             BTCUSDT
           </button>
-          <button className="h-10 px-3 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+
+          <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 px-3 text-sm text-slate-200 hover:bg-slate-900/40">
             1m
           </button>
-          <button className="h-10 px-3 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+
+          <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 px-3 text-sm text-slate-200 hover:bg-slate-900/40">
             Strategy: Momentum
           </button>
         </div>
       </div>
 
-      {/* KPI (고정) */}
-      <div className="shrink-0 grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+      <div className="shrink-0 grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">
         <KpiCard
           label="Today's PnL"
           value="+4.4%"
           sub="vs yesterday +1.2%"
           tone="good"
         />
+
         <KpiCard label="Total ROI" value="+52.3%" sub="All time" />
+
         <KpiCard
           label="Max Drawdown"
           value="-5.18%"
           sub="Rolling 30D"
           tone="bad"
         />
+
         <KpiCard label="Win Rate" value="69%" sub="Last 100 trades" />
       </div>
 
-      {/* Main area (남은 높이 전부 사용) */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Left (8): 위/아래 반반 */}
-        <div className="lg:col-span-8 min-h-0 flex flex-col gap-4">
+      <div className="flex-1 min-h-0 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="flex min-h-0 flex-col gap-4 lg:col-span-8">
           <Card
             title="Equity Curve"
             className="flex-1 min-h-0"
@@ -133,93 +160,81 @@ export default function HomePage() {
               </span>
             }
           >
-            <div className="h-full rounded-xl border border-slate-800/70 bg-[#0B1420]/35 flex items-center justify-center text-slate-500">
-              Chart Placeholder
+            <div className="flex h-full items-center justify-center rounded-xl border border-slate-800/70 bg-[#0B1420]/35 text-slate-500">
+              {balanceLoading
+                ? "잔고 불러오는 중..."
+                : balances.length > 0
+                  ? `${balances.length}개 거래소 연결됨`
+                  : "Chart Placeholder"}
             </div>
           </Card>
 
           <Card
             title="Open Positions"
             className="flex-1 min-h-0"
-            right={<span className="text-xs text-slate-500">Mock</span>}
+            right={<span className="text-xs text-slate-500">Live</span>}
           >
-            <div className="h-full min-h-0 rounded-xl border border-slate-800/70 bg-[#0B1420]/35 overflow-hidden">
+            <div className="h-full min-h-0 overflow-hidden rounded-xl border border-slate-800/70 bg-[#0B1420]/35">
               <div className="grid grid-cols-12 bg-[#0B1420]/55 px-3 py-2 text-[11px] text-slate-500">
-                <div className="col-span-3">Symbol</div>
-                <div className="col-span-2">Side</div>
-                <div className="col-span-2">Size</div>
-                <div className="col-span-2">Entry</div>
-                <div className="col-span-3 text-right">PnL</div>
+                <div className="col-span-3">Exchange</div>
+                <div className="col-span-3">Asset</div>
+                <div className="col-span-3">Free</div>
+                <div className="col-span-3 text-right">Total</div>
               </div>
 
-              {[
-                {
-                  sym: "BTCUSDT",
-                  side: "LONG",
-                  size: "0.012",
-                  entry: "62,140",
-                  pnl: "+$42",
-                },
-                {
-                  sym: "ETHUSDT",
-                  side: "SHORT",
-                  size: "0.18",
-                  entry: "3,120",
-                  pnl: "-$11",
-                },
-              ].map((r, i) => (
-                <div
-                  key={i}
-                  className="grid grid-cols-12 px-3 py-3 text-sm border-t border-slate-800/70"
-                >
-                  <div className="col-span-3 font-semibold text-slate-100">
-                    {r.sym}
-                  </div>
-                  <div className="col-span-2">
-                    <span
-                      className={`text-[11px] px-2 py-1 rounded-lg border ${
-                        r.side === "LONG"
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                          : "border-rose-500/30 bg-rose-500/10 text-rose-200"
-                      }`}
-                    >
-                      {r.side}
-                    </span>
-                  </div>
-                  <div className="col-span-2 text-slate-300">{r.size}</div>
-                  <div className="col-span-2 text-slate-300">{r.entry}</div>
-                  <div
-                    className={`col-span-3 text-right font-semibold ${
-                      r.pnl.startsWith("+")
-                        ? "text-emerald-300"
-                        : "text-rose-300"
-                    }`}
-                  >
-                    {r.pnl}
-                  </div>
+              {balances.length === 0 ? (
+                <div className="px-4 py-10 text-center text-sm text-slate-500">
+                  연결된 거래소가 없습니다.
                 </div>
-              ))}
+              ) : (
+                balances.map((exchangeItem, i) => {
+                  const total = exchangeItem?.balance?.total || {};
 
-              <div className="px-3 py-3 border-t border-slate-800/70 bg-[#0B1420]/35">
-                <button className="w-full h-10 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15 text-sm text-emerald-200 font-semibold">
-                  Go to Excution
-                </button>
-              </div>
+                  const assets = Object.keys(total)
+                    .filter((asset) => Number(total[asset]) > 0)
+                    .slice(0, 3);
+
+                  return assets.map((asset, idx) => (
+                    <div
+                      key={`${i}-${idx}`}
+                      className="grid grid-cols-12 border-t border-slate-800/70 px-3 py-3 text-sm"
+                    >
+                      <div className="col-span-3 font-semibold text-slate-100">
+                        {exchangeItem.exchange}
+                      </div>
+
+                      <div className="col-span-3 text-slate-300">{asset}</div>
+
+                      <div className="col-span-3 text-slate-300">
+                        {Number(
+                          exchangeItem.balance?.free?.[asset] || 0,
+                        ).toLocaleString()}
+                      </div>
+
+                      <div className="col-span-3 text-right font-semibold text-emerald-300">
+                        {Number(
+                          exchangeItem.balance?.total?.[asset] || 0,
+                        ).toLocaleString()}
+                      </div>
+                    </div>
+                  ));
+                })
+              )}
             </div>
           </Card>
         </div>
 
-        <div className="lg:col-span-4 min-h-0 flex flex-col gap-4">
+        <div className="flex min-h-0 flex-col gap-4 lg:col-span-4">
           <Card
             title="AI Predictions"
             className="flex-1 min-h-0"
             right={
-              <span className="text-xs px-2 py-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-200">
+              <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">
                 Live
               </span>
             }
           >
-            <div className="h-full min-h-0 flex flex-col gap-3">
+            <div className="flex h-full min-h-0 flex-col gap-3">
               {[
                 {
                   sym: "BTCUSDT",
@@ -227,7 +242,12 @@ export default function HomePage() {
                   conf: "72%",
                   note: "Momentum ↑",
                 },
-                { sym: "ETHUSDT", side: "FLAT", conf: "55%", note: "No edge" },
+                {
+                  sym: "ETHUSDT",
+                  side: "FLAT",
+                  conf: "55%",
+                  note: "No edge",
+                },
                 {
                   sym: "SOLUSDT",
                   side: "SHORT",
@@ -243,8 +263,9 @@ export default function HomePage() {
                     <div className="text-sm font-semibold text-slate-100">
                       {x.sym}
                     </div>
+
                     <div
-                      className={`text-[11px] px-2 py-1 rounded-lg border ${
+                      className={`rounded-lg border px-2 py-1 text-[11px] ${
                         x.side === "LONG"
                           ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                           : x.side === "SHORT"
@@ -255,8 +276,10 @@ export default function HomePage() {
                       {x.side}
                     </div>
                   </div>
+
                   <div className="mt-2 flex items-center justify-between text-xs">
                     <span className="text-slate-500">{x.note}</span>
+
                     <span className="text-slate-300">
                       conf <span className="text-slate-100">{x.conf}</span>
                     </span>
@@ -264,31 +287,36 @@ export default function HomePage() {
                 </div>
               ))}
 
-              <button className="mt-auto w-full h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+              <button className="mt-auto h-10 w-full rounded-xl border border-slate-800/70 bg-slate-900/25 text-sm text-slate-200 hover:bg-slate-900/40">
                 View all signals
               </button>
             </div>
           </Card>
 
           <Card title="Alerts / Logs" className="flex-1 min-h-0">
-            <div className="h-full min-h-0 rounded-xl border border-slate-800/70 bg-[#0B1420]/35 p-3 text-xs text-slate-300 overflow-hidden">
+            <div className="h-full min-h-0 overflow-hidden rounded-xl border border-slate-800/70 bg-[#0B1420]/35 p-3 text-xs text-slate-300">
               <div className="space-y-2">
-                <div className="text-slate-500">• Connected to Binance ✅</div>
+                <div className="text-slate-500">• Connected to Exchange ✅</div>
+
                 <div className="text-slate-500">• Model loaded: Predicting</div>
+
                 <div className="text-slate-500">
                   • Guard enabled: daily loss limit
                 </div>
+
                 <div className="text-slate-500">
                   • Signal: BTCUSDT LONG (72%)
                 </div>
+
                 <div className="text-slate-500">• Order: MARKET BUY</div>
               </div>
 
               <div className="mt-4 grid grid-cols-2 gap-2">
-                <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+                <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 text-sm text-slate-200 hover:bg-slate-900/40">
                   Clear
                 </button>
-                <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 hover:bg-slate-900/40 text-sm text-slate-200">
+
+                <button className="h-10 rounded-xl border border-slate-800/70 bg-slate-900/25 text-sm text-slate-200 hover:bg-slate-900/40">
                   Export
                 </button>
               </div>

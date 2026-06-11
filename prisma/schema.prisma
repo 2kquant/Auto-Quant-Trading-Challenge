@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?
+  provider  String   @default("credentials")
+  createdAt DateTime @default(now())
+
+  exchangeKeys   ExchangeApiKey[]
+  paperWallet    PaperWallet?
+  paperPositions PaperPosition[]
+  paperOrders    PaperOrder[]
+  paperTrades    PaperTrade[]
+}
+
+model ExchangeApiKey {
+  id        String @id @default(cuid())
+  exchange  String
+  apiKey    String
+  secretKey String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, exchange])
+}
+
+model PaperWallet {
+  id       String @id @default(cuid())
+  userId   String @unique
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  currency String @default("USDT")
+  cash     Float  @default(10000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PaperPosition {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  exchange String @default("binance")
+  symbol   String
+
+  qty       Float
+  avgPrice  Float
+  invested  Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, exchange, symbol])
+}
+
+model PaperOrder {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  exchange String @default("binance")
+  symbol   String
+  side     String
+  type     String @default("MARKET")
+  status   String @default("FILLED")
+
+  price  Float
+  qty    Float
+  amount Float
+
+  createdAt DateTime @default(now())
+}
+
+model PaperTrade {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  orderId String?
+
+  exchange String @default("binance")
+  symbol   String
+  side     String
+
+  price Float
+  qty   Float
+  value Float
+  pnl   Float?
+
+  createdAt DateTime @default(now())
+}

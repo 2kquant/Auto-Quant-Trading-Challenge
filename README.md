@@ -44,3 +44,36 @@ settings/dashboard
 _260402_
 사용자의 업비트 Access Key와 Secret Key 디비에 저장하기
 업비트에서 호출하여 잔고 불러오기
+
+_260507_
+Supabase Auth 로그인
+회원별 API Key 저장
+회원별 키 조회
+서버에서 CCXT 생성
+업비트/바이낸스 연결
+fetchBalance()
+로그인 후 잔고 불러오기
+
+실시간 시세 연결
+실제 주문
+코인 평가금액 계산
+자동매매 엔진
+DB 설계 추가
+
+_260508~_
+실시간 ticker
+주문 버튼
+trade history 저장
+websocket 실시간 가격
+AI 모델 연결
+자동매매 loop
+백테스트
+포트폴리오 분석
+리스크 관리
+VPS 24시간 운영
+
+_260514_
+PostgreSQL
+
+_260607_
+모델연결 성공 및 가상매매 성공

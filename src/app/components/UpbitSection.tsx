@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase";
 
 type UpbitAsset = {
   currency: string;
@@ -30,16 +29,14 @@ function formatKrw(value?: number | null) {
   return `₩ ${Math.round(value).toLocaleString()}`;
 }
 
-async function getAccessToken() {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+function getAccessToken() {
+  const token = localStorage.getItem("token");
 
-  if (!session?.access_token) {
+  if (!token) {
     throw new Error("로그인이 필요합니다.");
   }
 
-  return session.access_token;
+  return token;
 }
 
 async function saveUpbitAccount(params: {
@@ -47,57 +44,40 @@ async function saveUpbitAccount(params: {
   accessKey: string;
   secretKey: string;
 }) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const token = getAccessToken();
 
-  console.log("session:", session);
-  console.log("token:", session?.access_token);
-
-  if (!session?.access_token) {
-    throw new Error("로그인이 필요합니다. session access token 없음");
-  }
-
-  const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/save-upbit-account`;
-  console.log("request url:", url);
-
-  const res = await fetch(url, {
+  const res = await fetch("/api/exchange/save-key", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(params),
+    body: JSON.stringify({
+      exchange: "upbit",
+      accountName: params.accountName,
+      apiKey: params.accessKey,
+      secretKey: params.secretKey,
+    }),
   });
 
-  const text = await res.text();
-  console.log("status:", res.status);
-  console.log("response text:", text);
-
-  let json: any = {};
-  try {
-    json = JSON.parse(text);
-  } catch {}
+  const json = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    throw new Error(json?.error || text || "업비트 계정 저장 실패");
+    throw new Error(json?.error || "업비트 계정 저장 실패");
   }
 
   return json;
 }
 
 async function fetchUpbitBalance() {
-  const accessToken = await getAccessToken();
+  const token = getAccessToken();
 
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-upbit-balance`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+  const res = await fetch("/api/exchange/balance", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
     },
-  );
+  });
 
   const json = await res.json().catch(() => ({}));
 
@@ -105,7 +85,35 @@ async function fetchUpbitBalance() {
     throw new Error(json?.error || "업비트 잔고 조회 실패");
   }
 
-  return json as UpbitBalanceResponse;
+  const upbitData = Array.isArray(json)
+    ? json.find((item) => item.exchange === "upbit")
+    : null;
+
+  if (!upbitData) {
+    throw new Error("업비트 데이터가 없습니다.");
+  }
+
+  return {
+    ok: true,
+    exchange: "upbit",
+    accountId: "",
+    keyLast4: "",
+    krwCash:
+      upbitData?.balance?.total?.KRW || upbitData?.balance?.free?.KRW || 0,
+    totalEstimatedKrw:
+      upbitData?.balance?.total?.KRW || upbitData?.balance?.free?.KRW || 0,
+    assets: Object.keys(upbitData?.balance?.total || {}).map((currency) => ({
+      currency,
+      balance: Number(upbitData.balance.free?.[currency] || 0),
+      locked: Number(upbitData.balance.used?.[currency] || 0),
+      totalQty: Number(upbitData.balance.total?.[currency] || 0),
+      avgBuyPrice: 0,
+      currentPrice: null,
+      estimatedKrw: null,
+      unitCurrency: "KRW",
+    })),
+    fetchedAt: new Date().toISOString(),
+  } as UpbitBalanceResponse;
 }
 
 export function UpbitConnectionSection() {
@@ -141,6 +149,7 @@ export function UpbitConnectionSection() {
 
       setAccessKey("");
       setSecretKey("");
+
       setMessage("업비트 키가 저장되었습니다.");
 
       await handleLoadBalance();
@@ -157,9 +166,11 @@ export function UpbitConnectionSection() {
       setMessage("");
 
       const data = await fetchUpbitBalance();
+
       setBalance(data);
     } catch (error) {
       setBalance(null);
+
       setMessage(error instanceof Error ? error.message : "잔고 조회 실패");
     } finally {
       setBalanceLoading(false);
@@ -177,6 +188,7 @@ export function UpbitConnectionSection() {
           <h3 className="text-base font-semibold text-white md:text-lg">
             Upbit 연동
           </h3>
+
           <p className="mt-1 text-xs text-slate-400 md:text-sm">
             사용자가 직접 API 키를 저장하고 잔고를 불러옵니다.
           </p>
@@ -199,12 +211,14 @@ export function UpbitConnectionSection() {
           placeholder="계정 이름"
           className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500"
         />
+
         <input
           value={accessKey}
           onChange={(e) => setAccessKey(e.target.value)}
           placeholder="Upbit Access Key"
           className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500"
         />
+
         <input
           type="password"
           value={secretKey}
@@ -234,6 +248,7 @@ export function UpbitConnectionSection() {
       <div className="mt-5 grid gap-3 md:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
           <p className="text-xs text-slate-400">총 추정 자산</p>
+
           <p className="mt-2 text-xl font-bold text-white md:text-2xl">
             {formatKrw(balance?.totalEstimatedKrw)}
           </p>
@@ -241,6 +256,7 @@ export function UpbitConnectionSection() {
 
         <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
           <p className="text-xs text-slate-400">보유 KRW</p>
+
           <p className="mt-2 text-xl font-bold text-white md:text-2xl">
             {formatKrw(balance?.krwCash)}
           </p>
@@ -267,9 +283,13 @@ export function UpbitConnectionSection() {
               className="grid grid-cols-5 border-t border-white/10 px-4 py-3 text-sm text-white"
             >
               <div className="truncate font-medium">{item.currency}</div>
+
               <div className="truncate">{item.totalQty.toLocaleString()}</div>
+
               <div className="truncate">{formatKrw(item.avgBuyPrice)}</div>
+
               <div className="truncate">{formatKrw(item.currentPrice)}</div>
+
               <div className="truncate">{formatKrw(item.estimatedKrw)}</div>
             </div>
           ))
@@ -280,6 +300,7 @@ export function UpbitConnectionSection() {
         <span>
           연결 키: {balance?.keyLast4 ? `••••${balance.keyLast4}` : "-"}
         </span>
+
         <span>
           마지막 조회:{" "}
           {balance?.fetchedAt

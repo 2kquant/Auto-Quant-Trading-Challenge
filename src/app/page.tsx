@@ -3,7 +3,6 @@
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import React, { useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase/client";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -11,11 +10,9 @@ export default function LandingPage() {
   const [mode, setMode] = useState<"none" | "signin" | "signup">("none");
   const [isLoading, setIsLoading] = useState(false);
 
-  // sign in
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
 
-  // sign up
   const [signUpEmail, setSignUpEmail] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
   const [signUpPassword2, setSignUpPassword2] = useState("");
@@ -27,61 +24,24 @@ export default function LandingPage() {
 
   const year = useMemo(() => new Date().getFullYear(), []);
 
-  const isValidEmail = (email: string) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  };
+  const isValidEmail = (email: string) =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   const checkEmailFormatOnly = (emailRaw: string) => {
     const email = emailRaw.trim().toLowerCase();
 
     if (!email) {
       setEmailCheckStatus("idle");
-      return { ok: false, reason: "empty" as const };
+      return false;
     }
 
     if (!isValidEmail(email)) {
       setEmailCheckStatus("invalid");
-      return { ok: false, reason: "invalid" as const };
+      return false;
     }
 
     setEmailCheckStatus("available");
-    return { ok: true, reason: "format_ok" as const };
-  };
-
-  const parseSupabaseError = (message?: string) => {
-    const msg = (message || "").toLowerCase();
-
-    if (
-      msg.includes("invalid login credentials") ||
-      msg.includes("email not confirmed")
-    ) {
-      if (msg.includes("email not confirmed")) {
-        return "이메일 인증이 완료되지 않았습니다. 메일함에서 인증을 완료해 주세요.";
-      }
-      return "이메일 또는 비밀번호가 올바르지 않습니다.";
-    }
-
-    if (msg.includes("user already registered")) {
-      return "이미 가입된 이메일입니다.";
-    }
-
-    if (msg.includes("password should be at least")) {
-      return "비밀번호가 너무 짧습니다. 6자 이상으로 입력해 주세요.";
-    }
-
-    if (msg.includes("unable to validate email address")) {
-      return "이메일 형식이 올바르지 않습니다.";
-    }
-
-    if (msg.includes("signup is disabled")) {
-      return "현재 회원가입이 비활성화되어 있습니다. Supabase Auth 설정을 확인해 주세요.";
-    }
-
-    if (msg.includes("network")) {
-      return "네트워크 요청에 실패했습니다. 인터넷 연결을 확인해 주세요.";
-    }
-
-    return "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    return true;
   };
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -99,38 +59,33 @@ export default function LandingPage() {
     try {
       setIsLoading(true);
 
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
       });
 
-      if (error) throw error;
+      const data = await res.json();
 
-      const {
-        data: { session },
-        error: sessionError,
-      } = await supabase.auth.getSession();
-
-      if (sessionError) throw sessionError;
-
-      if (!session?.access_token) {
+      if (!res.ok) {
         throw new Error(
-          "로그인은 되었지만 access token을 가져오지 못했습니다.",
+          data?.error || data?.message || "로그인에 실패했습니다.",
         );
       }
 
-      // 로그인 직후 profiles 자동 생성/보정
-      await fetch("/api/profile/bootstrap", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
+      if (!data?.token) {
+        throw new Error("로그인은 되었지만 토큰을 가져오지 못했습니다.");
+      }
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
 
       window.alert("로그인되었습니다.");
       router.push("/home");
     } catch (err: any) {
-      console.error("SUPABASE_SIGNIN_ERROR:", err?.message, err);
+      console.error("LOGIN_ERROR:", err);
       window.alert(err?.message || "로그인에 실패했습니다.");
     } finally {
       setIsLoading(false);
@@ -150,8 +105,7 @@ export default function LandingPage() {
       return;
     }
 
-    const formatCheck = checkEmailFormatOnly(email);
-    if (!formatCheck.ok) {
+    if (!checkEmailFormatOnly(email)) {
       window.alert("이메일 형식이 올바르지 않습니다.");
       return;
     }
@@ -170,32 +124,33 @@ export default function LandingPage() {
       setIsLoading(true);
       setEmailCheckStatus("checking");
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
       });
 
-      if (error) throw error;
+      const data = await res.json();
+
+      if (!res.ok) {
+        const message =
+          data?.error || data?.message || "회원가입에 실패했습니다.";
+
+        if (
+          message.includes("이미") ||
+          message.toLowerCase().includes("already")
+        ) {
+          setEmailCheckStatus("taken");
+        }
+
+        throw new Error(message);
+      }
 
       setEmailCheckStatus("available");
 
-      // 이메일 인증이 꺼져 있으면 세션이 있을 수 있음
-      if (data.session?.access_token) {
-        await fetch("/api/profile/bootstrap", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${data.session.access_token}`,
-          },
-        });
-      }
-
-      if (!data.session) {
-        window.alert(
-          "회원가입이 완료되었습니다. 이메일 인증 후 로그인해 주세요.",
-        );
-      } else {
-        window.alert("회원가입이 완료되었습니다. 이제 로그인해 주세요.");
-      }
+      window.alert("회원가입이 완료되었습니다. 이제 로그인해 주세요.");
 
       setMode("signin");
       setSignInEmail(email);
@@ -204,7 +159,7 @@ export default function LandingPage() {
       setSignUpPassword2("");
       setAgreedTos(false);
     } catch (err: any) {
-      console.error("SUPABASE_SIGNUP_ERROR:", err?.message, err);
+      console.error("SIGNUP_ERROR:", err);
       window.alert(err?.message || "회원가입에 실패했습니다.");
     } finally {
       setIsLoading(false);
@@ -245,11 +200,7 @@ export default function LandingPage() {
         </div>
 
         <div
-          className={`overflow-hidden transition-all duration-300 ${
-            mode === "signin"
-              ? "max-h-[340px] opacity-100 mt-4"
-              : "max-h-0 opacity-0"
-          }`}
+          className={`overflow-hidden transition-all duration-300 ${mode === "signin" ? "max-h-[340px] opacity-100 mt-4" : "max-h-0 opacity-0"}`}
         >
           <form onSubmit={handleSignIn} className="space-y-3">
             <div>
@@ -296,11 +247,7 @@ export default function LandingPage() {
         </div>
 
         <div
-          className={`overflow-hidden transition-all duration-300 ${
-            mode === "signup"
-              ? "max-h-[700px] opacity-100 mt-4"
-              : "max-h-0 opacity-0"
-          }`}
+          className={`overflow-hidden transition-all duration-300 ${mode === "signup" ? "max-h-[700px] opacity-100 mt-4" : "max-h-0 opacity-0"}`}
         >
           <form onSubmit={handleSignUp} className="space-y-3">
             <div>
@@ -328,8 +275,7 @@ export default function LandingPage() {
                 )}
                 {emailCheckStatus === "available" && (
                   <span className="text-emerald-300">
-                    이메일 형식이 정상입니다. 가입 시 가입 가능 여부가
-                    확인됩니다.
+                    이메일 형식이 정상입니다.
                   </span>
                 )}
                 {emailCheckStatus === "taken" && (
