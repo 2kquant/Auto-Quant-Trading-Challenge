@@ -1,0 +1,374 @@
+================================================================================
+  RealtimeCryptoModel 클래스 정의서
+  실시간 Upbit 1분봉 추세 예측 모델 관련 클래스 상세 설명서
+================================================================================
+
+생성일: 2026-06-06
+대상: ForKang(친구)
+용도: 1st_test.py, example_inference.py 등에서 사용되는 핵심 클래스 설명
+
+================================================================================
+1. RealtimeFeatureConfig (데이터클래스)
+================================================================================
+
+목적:
+  - 피처 생성 및 라벨링 설정을 관리하는 불변(frozen) 데이터클래스임 ~음
+  - 모든 모델과 피처 생성 함수에서 동일한 설정을 사용하도록 보장함 ~임
+
+속성(Attributes):
+  ┌─────────────────────────────────────────────────────────┐
+  │ horizon_minutes (int, 기본값 30)                         │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 현재 1분봉 종료 시점 기준으로 몇 분 뒤의 수익률을    │
+  │   예측할 것인지 지정함 ~음                               │
+  │ • 모델은 현재(t) 시점의 피처로 t+N분의 수익률을        │
+  │   예측함 ~임                                             │
+  │ • 보통 30분(1st_test.py 기본값)이나 60분 사용함 ~음     │
+  │ • 매매 전략의 "보유 기간"을 의미함 ~임                   │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ min_return_bps (float, 기본값 12.0)                      │
+  ├─────────────────────────────────────────────────────────┤
+  │ • "양성 라벨" 판정 기준값(basis points, bp) ~음          │
+  │ • bp = basis point = 0.01% 단위                          │
+  │   - 12.0 bp = 0.12% 수익 이상이면 라벨=1(매수 신호) ~음│
+  │   - 미만이면 라벨=0(중립/대기) ~임                       │
+  │ • 모델 학습 시점에 이 기준으로 라벨을 만듦 ~음          │
+  │ • 1st_test.py에서도 손익 계산에 기준값으로 사용됨 ~임   │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ fee_bps (float, 기본값 5.0)                              │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 거래 비용 가정(basis points) ~음                       │
+  │ • Upbit 현물 수수료 기준(편도 0.05% ≈ 5bp)임 ~임        │
+  │ • 실제는 매수+매도이므로 총 10bp이지만, 모델은           │
+  │   5bp 차감 기준으로 학습됨(보수적 추정) ~음             │
+  │ • 수익률 계산 시: 실제수익 - fee_bps/10000 ~임          │
+  └─────────────────────────────────────────────────────────┘
+
+메서드(Methods):
+  • positive_return_threshold (property, 읽기 전용)
+    - 반환: min_return_bps / 10_000.0 형태의 소수값 ~음
+    - 예: min_return_bps=12.0 → threshold=0.0012 ~임
+    - 내부 계산에서 float 비교할 때 사용됨 ~음
+
+사용 예:
+  config = RealtimeFeatureConfig(horizon_minutes=30, min_return_bps=12.0, fee_bps=5.0)
+  threshold = config.positive_return_threshold  # 0.0012
+  print(f"30분 뒤 {12.0}bp 이상 수익률 예측함")
+
+================================================================================
+2. RealtimeCryptoModel (메인 Wrapper 클래스)
+================================================================================
+
+목적:
+  - XGBoost 모델을 pickle 직렬화 가능한 형태로 감싸는 wrapper ~음
+  - 피처 정렬(align_feature_frame), 확률 예측, 신호 생성을 한 곳에 구현함 ~임
+  - 실거래 및 모의투자(1st_test.py)에서 직접 사용되는 클래스임 ~음
+
+속성(Attributes):
+  ┌─────────────────────────────────────────────────────────┐
+  │ model (Any)                                              │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 학습된 XGBoost 분류 모델(XGBClassifier) ~음            │
+  │ • predict_proba() 메서드 필수: [P(y=0), P(y=1)] 반환 ~임│
+  │ • CPU 추론 모드로 설정됨 ~음                             │
+  │ • 직접 접근하지 말고 predict_proba() / predict_signal() │
+  │   메서드를 통해 사용하는 것을 권장함 ~임                │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ feature_columns (list[str])                              │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 모델 입력 피처의 이름 목록(91개) ~음                   │
+  │ • 순서가 중요함: pickle 로드 후에도 정확히 같은 순서 유지│
+  │ • 예: ["ret_1m", "ret_3m", ..., "dow_cos"] ~임          │
+  │ • predict_proba() 호출 시 이 순서대로 정렬됨 ~음        │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ threshold (float)                                        │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 신호 생성 임계값(0.0 ~ 1.0) ~음                       │
+  │ • predict_proba() 출력값이 threshold 이상이면 signal=1  │
+  │   (매수), 미만이면 signal=0(대기/중립) ~임              │
+  │ • 보통 0.5 근처(val set에서 최적 지점) ~음              │
+  │ • predict_signal() 반환값의 "threshold" 컬럼에도 기록됨 │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ config (RealtimeFeatureConfig)                           │
+  ├─────────────────────────────────────────────────────────┤
+  │ • horizon_minutes, min_return_bps, fee_bps 설정 보관 ~음│
+  │ • build_realtime_features()에 전달하여 사용함 ~임       │
+  │ • 1st_test.py에서 horizon_minutes로 보유 기간 결정 ~음 │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ metadata (dict[str, Any])                                │
+  ├─────────────────────────────────────────────────────────┤
+  │ • 모델 생성 정보 메타데이터 ~음                          │
+  │ • 포함 정보: created_at_local, training_device,         │
+  │   source_meta(학습 데이터 범위), feature_columns 등 ~임 │
+  │ • 정보 제공용이며 예측에는 직접 사용되지 않음 ~음       │
+  └─────────────────────────────────────────────────────────┘
+
+메서드(Methods):
+
+  1) predict_proba(feature_frame: pd.DataFrame) -> np.ndarray
+     ┌────────────────────────────────────────────────────────┐
+     │ 설명: 피처 df → 추세 확률(0~1) 변환함 ~음              │
+     ├────────────────────────────────────────────────────────┤
+     │ 입력: pd.DataFrame                                      │
+     │   • 보정되지 않은 원본 피처 데이터프레임 ~음           │
+     │   • 컬럼: market, timestamp_utc, close_u, 피처컬럼... │
+     │                                                         │
+     │ 동작:                                                   │
+     │   1) align_feature_frame()으로 컬럼 정렬 ~음           │
+     │   2) NaN 값을 중앙값/0으로 채움 ~음                    │
+     │   3) model.predict_proba() 호출 ~임                    │
+     │   4) [P(y=0), P(y=1)] 중 P(y=1) 추출 반환 ~음         │
+     │                                                         │
+     │ 출력: np.ndarray, shape (n_rows,)                       │
+     │   • 각 행의 추세 확률값(0.0 ~ 1.0) ~음                │
+     │   • 예: [0.65, 0.45, 0.72, ...] ~임                    │
+     └────────────────────────────────────────────────────────┘
+
+  2) predict_signal(feature_frame: pd.DataFrame) -> pd.DataFrame
+     ┌────────────────────────────────────────────────────────┐
+     │ 설명: 피처 df에 신호 컬럼을 추가하여 반환함 ~음        │
+     ├────────────────────────────────────────────────────────┤
+     │ 입력: pd.DataFrame (predict_proba() 입력과 동일)       │
+     │                                                         │
+     │ 동작:                                                   │
+     │   1) 입력 df 복사 ~음                                  │
+     │   2) predict_proba() 호출하여 확률 계산 ~음            │
+     │   3) "trend_probability" 컬럼 추가 ~음                │
+     │   4) "signal" 컬럼 추가:                                │
+     │      signal = 1 if trend_prob >= threshold else 0 ~임 │
+     │   5) "threshold" 컬럼 추가(상수값) ~음                │
+     │                                                         │
+     │ 출력: pd.DataFrame                                      │
+     │   • 입력 + [trend_probability, signal, threshold] ~음 │
+     │   • 예:                                                 │
+     │     market | timestamp | close_u | ret_1m | ... |      │
+     │     KRW-BTC | 2026-... | 45000  | 0.01  | ... |      │
+     │     trend_probability | signal | threshold               │
+     │        0.72           |   1    |  0.5                 │
+     └────────────────────────────────────────────────────────┘
+
+사용 예:
+
+  import pickle
+  from realtime_model import build_realtime_features
+  
+  # 모델 로드
+  with open('realtime_upbit_trend_model.pkl', 'rb') as f:
+      model = pickle.load(f)
+  
+  # 피처 생성(더미 예)
+  live_data = pd.DataFrame({
+      'market': ['KRW-BTC', 'KRW-BTC', ...],
+      'timestamp_utc': [...],
+      'close_u': [45000, 45010, ...],
+      ...  # 기타 OHLCV
+  })
+  
+  features = build_realtime_features(live_data, config=model.config, include_target=False)
+  
+  # 확률만 필요한 경우
+  proba = model.predict_proba(features)  # [0.65, 0.45, ...]
+  
+  # 신호 필요한 경우(1st_test.py에서 사용)
+  signals = model.predict_signal(features)
+  buy_signals = signals[signals['signal'] == 1]  # 매수 신호만 추출
+  
+  for _, row in buy_signals.iterrows():
+      market = row['market']
+      prob = row['trend_probability']
+      print(f"{market}: 확률 {prob:.2%}, 매수 신호 발생")
+
+================================================================================
+3. RealtimeCryptoModelSuite (다중 Horizon 모델 스위트)
+================================================================================
+
+목적:
+  - 여러 예측 기간(horizon)의 모델을 하나의 pickle로 관리함 ~음
+  - 사용자가 필요한 horizon을 선택하여 예측할 수 있도록 함 ~임
+  - 아직 1st_test.py에서 직접 사용되지는 않음(향후 확장용) ~음
+
+속성(Attributes):
+  • models (dict[str, RealtimeCryptoModel]): horizon 이름 → 모델 맵핑 ~음
+    예: {"short_30m": model1, "medium_60m": model2} ~임
+  
+  • metadata (dict): 스위트 전체 메타데이터 ~음
+  
+  • feature_columns (list[str]): 모든 모델이 공유하는 피처 리스트(91개) ~음
+
+메서드(Methods):
+  • available_horizons() -> list[str]: 사용 가능 horizon 목록 반환 ~음
+  • predict_proba(feature_frame, horizon="short_30m"): 특정 horizon 확률 ~음
+  • predict_signal(feature_frame, horizon="short_30m"): 특정 horizon 신호 ~음
+
+사용 예:
+  suite = pickle.load(...)  # 여러 horizon 포함
+  print(suite.available_horizons())  # ['medium_60m', 'short_30m', ...]
+  
+  # 30분 horizon으로 예측
+  signals_30m = suite.predict_signal(features, horizon='short_30m')
+  
+  # 60분 horizon으로 예측
+  signals_60m = suite.predict_signal(features, horizon='medium_60m')
+
+================================================================================
+4. 유틸리티 함수
+================================================================================
+
+1) align_feature_frame(frame, feature_columns) -> pd.DataFrame
+   ─────────────────────────────────────────────────────
+   목적: 피처 df의 컬럼을 모델 입력 순서대로 정렬하고 보정함 ~음
+   
+   동작:
+     1) feature_columns 순서대로 컬럼 재배치 ~음
+     2) 모든 값을 float으로 변환 ~음
+     3) inf/-inf를 NaN으로 처리 ~음
+     4) NaN을 중앙값(또는 0)으로 채움 ~음
+     5) float32로 메모리 최적화하여 반환 ~음
+   
+   사용: predict_proba() 내부에서 자동 호출됨 ~음
+
+2) build_realtime_features(frame, config, include_target) -> pd.DataFrame
+   ─────────────────────────────────────────────────────────────────────
+   목적: 1분봉 OHLCV로부터 91개 실시간 피처를 생성함 ~음
+   
+   필수 입력 컬럼:
+     • market (str): 마켓명(예: KRW-BTC) ~음
+     • timestamp_utc (datetime): UTC 타임스탬프 ~음
+     • open_u, high_u, low_u, close_u, volume_u (float): 업비트 OHLCV ~음
+   
+   선택 입력 컬럼:
+     • open_b, high_b, low_b, close_b, volume_b (float): 바이낸스 OHLCV ~음
+     • taker_buy_base_volume (float): Binance taker buy volume ~음
+     • market_fx (float): KRW/USD 환율 ~음
+     • kimp_real (float): 업비트-바이낸스 김프% ~음
+   
+   출력 피처(91개):
+     • 가격 모멘텀(10개): ret_1m ~ ret_2880m ~음
+     • 캔들 구조(4개): range_pct, body_pct, upper_wick_pct, lower_wick_pct ~음
+     • 변동성(10개): volatility_*, realized_vol_* ~음
+     • 추세 지표(9개): ema_*, macd_*, rsi_14, bb_z_20, ... ~음
+     • 시장 구조(58개): 유동성, 크로스마켓, 스프레드, 거시, 시간정보 ~음
+   
+   include_target=True인 경우 추가 컬럼:
+     • future_return (float): N분 뒤 실제 수익률 ~음
+     • target (int): 라벨 (1 = 수익>=min_return_bps, 0 = 미만) ~음
+   
+   사용: 1st_test.py에서 매 루프마다 호출함 ~음
+
+================================================================================
+5. 전역 상수: REALTIME_FEATURE_COLUMNS
+================================================================================
+
+의미:
+  - 모델이 입력받는 91개 피처의 이름을 순서대로 나열한 리스트임 ~음
+  - align_feature_frame()이 이 순서대로 df 컬럼을 정렬함 ~임
+
+분류(by 용도):
+
+  [가격 모멘텀 10개]
+    ret_1m, ret_3m, ret_5m, ret_15m, ret_30m, ret_60m,
+    ret_120m, ret_240m, ret_720m, ret_1440m, ret_2880m
+    → 과거 N분 수익률로 단기 추세 포착 ~음
+
+  [캔들 구조 4개]
+    range_pct(일중 범위), body_pct(실체), upper_wick_pct, lower_wick_pct
+    → 캔들 형태 분석 ~음
+
+  [변동성 10개]
+    volatility_5m, volatility_15m, volatility_30m_rt, volatility_60m, ...
+    realized_vol_30m, realized_vol_120m, ...
+    → 시장 변동성/불안정성 측정 ~음
+
+  [추세 지표 9개]
+    ema_12_ratio(EMA 괴리), macd_ratio, macd_signal_ratio, macd_hist_ratio,
+    rsi_14, bb_z_20(볼린저 z-score), dist_high_60, dist_low_60, breakout_20
+    → 기술적 지표 기반 추세 신호 ~음
+
+  [유동성 8개]
+    volume_rel_30/120/1440, value_rel_30/120/1440, value_z_120, value_z_1440
+    → 거래량/거래대금 상대 수준 ~음
+
+  [바이낸스 연동 11개]
+    binance_ret_1m ~ binance_ret_240m, binance_range_pct,
+    binance_volume_rel_30/240, binance_taker_buy_ratio
+    → Binance 동시점 데이터로 글로벌 시장 신호 ~음
+
+  [업비트-바이낸스 스프레드 9개]
+    upbit_binance_ret_spread_*, kimp_real, kimp_velocity_*, kimp_z_1440
+    → 국내 김프 및 가격 차이 ~음
+
+  [환율/거시 20개]
+    market_fx, market_fx_change_*, btc_dominance, btc_dominance_change_*,
+    btc_dominance_z_1440, btc_ret_15m/60m, btc_volatility_30m,
+    eth_ret_15m/60m, eth_volatility_30m
+    → 환율, BTC/ETH 추세, 시장 거시 구조 ~음
+
+  [시간 정보 4개]
+    hour_sin, hour_cos(일중 시간 sin/cos), dow_sin, dow_cos(요일 sin/cos)
+    → 일중 주기성과 주간 패턴 ~음
+
+================================================================================
+6. 실제 사용 흐름 (1st_test.py 기준)
+================================================================================
+
+흐름도:
+
+  1. 모델 로드
+     └─ pickle.load("realtime_upbit_trend_model.pkl")
+        → RealtimeCryptoModel 인스턴스 획득
+
+  2. 데이터 준비(CSV 재생 또는 실시간 API)
+     └─ pd.DataFrame with OHLCV 컬럼
+
+  3. 피처 생성
+     └─ build_realtime_features(df, config=model.config, include_target=False)
+        → 91개 피처 컬럼 생성
+
+  4. 신호 생성 (매 1분마다)
+     └─ model.predict_signal(features)
+        → trend_probability, signal, threshold 컬럼 추가
+
+  5. 신호 처리
+     ├─ if signal == 1: 매수 주문 실행
+     └─ 보유 기간(horizon_minutes) 후 매도
+
+  6. 거래 기록 저장
+     └─ append_trade_csv(결과.csv)
+        (entry_time, exit_time, market, prices, return_pct, ...)
+
+이 흐름이 계속 반복되며, 최종 거래 기록은 "테스트 결과.csv"에 누적됨 ~음
+
+================================================================================
+7. 주의사항
+================================================================================
+
+• 모델 pickle은 코드(realtime_model.py)와 함께 배포되어야 함 ~음
+  - 클래스 정의가 변경되면 로드 실패 가능 ~임
+
+• 피처 컬럼 순서는 절대 변경하면 안 됨 ~음
+  - align_feature_frame()이 정확한 순서를 기대함 ~임
+
+• 입력 데이터의 market/timestamp_utc/close_u는 필수 ~음
+  - 나머지 피처는 NaN일 수 있으나, 성능 저하 가능 ~임
+
+• threshold 값은 모델 학습 시 validation set에서 결정됨 ~음
+  - 실거래에서 조정 가능하지만 권장하지 않음(overfitting 위험) ~음
+
+• 과거 성능이 미래를 보장하지 않음 ~음
+  - 정기적인 성능 모니터링 및 재학습 필요 ~임
+
+================================================================================
+End of Document
+================================================================================

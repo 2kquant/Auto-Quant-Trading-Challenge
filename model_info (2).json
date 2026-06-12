@@ -1,0 +1,92 @@
+{
+  "model": {
+    "name": "Realtime Upbit Trend Predictor",
+    "version": "1.0",
+    "created_date": "2026-06-05",
+    "algorithm": "XGBoost Gradient Boosting",
+    "training_device": "CUDA (GPU)",
+    "inference_device": "CPU"
+  },
+  "prediction": {
+    "target": "30-minute ahead return prediction",
+    "target_label": "Return >= min_return_bps (after fee deduction)",
+    "horizon_minutes": 30,
+    "min_return_bps": 12.0,
+    "fee_bps": 5.0,
+    "threshold": 0.5,
+    "output_range": "0.0 to 1.0 (probability)"
+  },
+  "data_requirements": {
+    "markets": "Upbit top20 cryptocurrencies",
+    "timeframe": "1-minute OHLCV candles",
+    "history_window_minutes": 120,
+    "minimum_candles_per_market": 120,
+    "required_columns": [
+      "market",
+      "timestamp_utc",
+      "open_u",
+      "high_u",
+      "low_u",
+      "close_u",
+      "volume_u"
+    ],
+    "optional_columns": [
+      "open_b",
+      "high_b",
+      "low_b",
+      "close_b",
+      "volume_b",
+      "taker_buy_base_volume",
+      "market_fx",
+      "kimp_real"
+    ]
+  },
+  "features": {
+    "total_count": 91,
+    "categories": {
+      "price_momentum": 10,
+      "candle_structure": 4,
+      "volatility": 10,
+      "trend_indicators": 9,
+      "market_structure": 58
+    }
+  },
+  "performance": {
+    "training_period": "Last 4 years (2022-2026)",
+    "training_samples": 2000000,
+    "test_set_size": 350000,
+    "positive_label_ratio": 0.15,
+    "estimated_ap": "0.65-0.75",
+    "estimated_roc_auc": "0.70-0.80",
+    "estimated_hit_rate": "0.50-0.60",
+    "estimated_avg_return_pct": 0.015,
+    "latency_ms_per_20_assets": "3-5ms"
+  },
+  "usage": {
+    "primary_use": "Real-time trading signal generation",
+    "suggested_update_frequency_hours": 168,
+    "suggested_retraining_frequency_months": 3,
+    "portfolio_suggestion": "Use with risk management and position sizing"
+  },
+  "warnings": [
+    "Past performance does not guarantee future results",
+    "Model trained on historical data with potential survivorship bias",
+    "Market regime changes may impact model performance",
+    "Always validate with recent data before trading",
+    "Use stop-loss and position sizing in live trading",
+    "Monitor model performance weekly",
+    "Consider ensemble with other models/strategies"
+  ],
+  "files": {
+    "model": "realtime_upbit_trend_model.pkl",
+    "feature_module": "realtime_model.py",
+    "example_code": "example_inference.py",
+    "documentation": "실시간_추론_가이드.md",
+    "setup_notes": "setup_notes.md",
+    "requirements": "requirements.txt",
+    "metadata": "model_info.json"
+  },
+  "contact": {
+    "note": "For support and updates, refer to setup_notes.md troubleshooting section"
+  }
+}
