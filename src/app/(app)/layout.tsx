@@ -10,6 +10,8 @@ import {
   getFearGreedColor,
   getFearGreedLabel,
 } from "@/contexts/fear-greed-context";
+import LoadingOverlay from "../components/LoadingOverlay";
+import { useLoading } from "@/contexts/loadingContext";
 
 const ICON = {
   logo: "/images/logo1.png",
@@ -217,11 +219,14 @@ function FearGreedIndicator() {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const { loading } = useLoading();
 
   return (
     <ExchangeProvider>
       <FearGreedProvider>
         <div className="min-h-screen bg-[#0B1420] text-white">
+          {loading && <LoadingOverlay />}
+
           {/* ✅ 데스크탑 fixed 사이드바 */}
           <SidebarDesktop />
 

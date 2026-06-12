@@ -2,22 +2,28 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import LoadingOverlay from "../components/LoadingOverlay";
+import { useLoading } from "@/contexts/loadingContext";
 
 export default function AppHeader() {
+  const { loading } = useLoading();
   return (
-    <header className="sticky top-0 z-40 w-full">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-        <Link href="/home" className="flex items-center gap-2">
-          <Image
-            src="/images/logo1.png"
-            alt="2K Quant"
-            width={28}
-            height={28}
-          />
-        </Link>
+    <>
+      {loading && <LoadingOverlay />}
+      <header className="sticky top-0 z-40 w-full">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
+          <Link href="/home" className="flex items-center gap-2">
+            <Image
+              src="/images/logo1.png"
+              alt="2K Quant"
+              width={28}
+              height={28}
+            />
+          </Link>
 
-        <div className="flex items-center gap-2">{/* ex) 알림/프로필 */}</div>
-      </div>
-    </header>
+          <div className="flex items-center gap-2">{/* ex) 알림/프로필 */}</div>
+        </div>
+      </header>
+    </>
   );
 }

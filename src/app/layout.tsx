@@ -1,19 +1,22 @@
-// src/app/layout.tsx
+import type { Metadata } from "next";
 import "./globals.css";
+import { LoadingProvider } from "../contexts/loadingContext";
 
-export const metadata = {
-  title: "2K Quant",
-  description: "Quant Dashboard",
+export const metadata: Metadata = {
+  title: "Quant App",
+  description: "AI Quant Trading App",
 };
 
 export default function RootLayout({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <html lang="ko">
-      <body>{children}</body>
+      <body>
+        <LoadingProvider>{children}</LoadingProvider>
+      </body>
     </html>
   );
 }
