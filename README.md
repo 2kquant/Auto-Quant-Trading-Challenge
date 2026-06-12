@@ -84,3 +84,7 @@ https://auto-quant-trading-challenge-gwhj.vercel.app/
 
 _260612_
 로딩오버레이 추가
+
+_260613 todo_
+컨피던스 컨트롤 트리거 만들기
+자동매매 로그 커스텀 트리거 만들기
