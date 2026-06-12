@@ -80,3 +80,4 @@ _260607_
 
 _260611_
 vercel 배포
+https://auto-quant-trading-challenge-gwhj.vercel.app/
