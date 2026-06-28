@@ -17,6 +17,11 @@ async function telegram(method: string, body: unknown) {
 export async function POST(req: NextRequest) {
   console.log("===== WEBHOOK CALLED =====");
 
+  console.log("APP_URL =", process.env.APP_URL);
+  console.log("NEXT_PUBLIC_APP_URL =", process.env.NEXT_PUBLIC_APP_URL);
+  console.log("BOT =", !!process.env.TELEGRAM_BOT_TOKEN);
+  console.log("SECRET =", !!process.env.TELEGRAM_ADMIN_SECRET);
+
   try {
     const update = await req.json();
 
