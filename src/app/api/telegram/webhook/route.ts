@@ -35,40 +35,25 @@ export async function POST(req: NextRequest) {
     if (message?.text === "/start") {
       const chatId = String(message.chat.id);
 
-      await telegram("sendMessage", {
+      const res = await telegram("sendMessage", {
         chat_id: chatId,
         text: "2K Quant Bot",
         reply_markup: {
           inline_keyboard: [
             [
-              {
-                text: "▶ START",
-                callback_data: "START",
-              },
-              {
-                text: "⏸ PAUSE",
-                callback_data: "PAUSE",
-              },
+              { text: "▶ START", callback_data: "START" },
+              { text: "⏸ PAUSE", callback_data: "PAUSE" },
             ],
             [
-              {
-                text: "⏹ STOP",
-                callback_data: "STOP",
-              },
-              {
-                text: "💰 MODE",
-                callback_data: "MODE",
-              },
+              { text: "⏹ STOP", callback_data: "STOP" },
+              { text: "💰 MODE", callback_data: "MODE" },
             ],
-            [
-              {
-                text: "📊 STATUS",
-                callback_data: "STATUS",
-              },
-            ],
+            [{ text: "📊 STATUS", callback_data: "STATUS" }],
           ],
         },
       });
+
+      console.log("TELEGRAM SEND RESULT =", await res.text());
 
       return NextResponse.json({ ok: true });
     }
