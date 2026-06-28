@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
+console.log("BOT_TOKEN =", process.env.TELEGRAM_BOT_TOKEN);
 const SECRET = process.env.TELEGRAM_ADMIN_SECRET!;
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL!;
 
