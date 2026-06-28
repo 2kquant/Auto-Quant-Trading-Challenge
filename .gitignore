@@ -1,6 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
+# Dependencies
 /node_modules
 /.pnp
 .pnp.*
@@ -10,55 +8,78 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
+# Next.js
 /.next/
 /out/
-
-# production
 /build
 
-# misc
-.DS_Store
-*.pem
+# Coverage
+/coverage
 
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
+# Vercel
 .vercel
 
-# typescript
+# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
+# Generated
 /src/generated/prisma
+
+# Environment Variables
+.env
+.env.*
+!.env.example
 
 # Python
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
 
-# AI model files
+# AI Models
 *.pkl
 *.joblib
+*.pt
+*.pth
+*.h5
+*.onnx
+models/
+checkpoints/
 
-# Local env
-.env
-.env.local
+# Databases
+*.db
+*.sqlite
+*.sqlite3
 
-# Local test files
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificates
+*.pem
+
+# IDE
+.vscode/settings.json
+
+# Local Test Files
 test.py
 *_test.py
 
-# Local AI server folders
+# Uploads
+uploads/
+
+# Local AI Servers
 ai-server/
 ai-server2/
+
+.telegram_trading_state.json

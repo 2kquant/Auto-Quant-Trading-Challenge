@@ -19,6 +19,24 @@ model User {
   paperPositions PaperPosition[]
   paperOrders    PaperOrder[]
   paperTrades    PaperTrade[]
+  telegramLinks  TelegramUserLink[]
+  paperAccount   PaperAccount?
+  tradeLogs      TradeLog[]
+  aiDecisionLogs AiDecisionLog[]
+  tradingPreference TradingPreference?
+}
+
+model TelegramUserLink {
+  id             String @id @default(cuid())
+  telegramChatId String @unique
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, telegramChatId])
 }
 
 model ExchangeApiKey {
@@ -101,4 +119,70 @@ model PaperTrade {
   pnl   Float?
 
   createdAt DateTime @default(now())
+}
+
+model TradingPreference {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mode String @default("PAPER")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("trading_preferences")
+}
+
+model PaperAccount {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  virtualBalance Float @default(10000000)
+  virtualPnl     Float @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("paper_accounts")
+}
+
+model TradeLog {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mode        String
+  market      String
+  side        String
+  signal      String?
+  probability Float?
+  price       Float?
+  entryPrice  Float?
+  exitPrice   Float?
+  pnl         Float?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("trade_logs")
+}
+
+model AiDecisionLog {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  market           String
+  rsi              Float?
+  volume           Float?
+  trendProbability Float?
+  confidence       Float?
+  finalDecision    String
+  mode             String @default("PAPER")
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("ai_decision_logs")
 }

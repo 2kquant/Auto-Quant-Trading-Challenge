@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 
 type ExchangeType = "upbit" | "binance";
+type SettingsTab = "exchange" | "strategy" | "notification";
+type LogUpdateIntervalValue = "realtime" | "5sec" | "30sec" | "1min";
+type TradingMode = "PAPER" | "LIVE";
 
 type BalanceResponse = {
   exchange: ExchangeType;
@@ -14,48 +17,121 @@ type BalanceResponse = {
   error?: boolean;
 };
 
+type PaperWallet = {
+  cash: number | string;
+  currency: string;
+};
+
+const LOG_UPDATE_INTERVAL_KEY = "ai_quant_log_update_interval_v1";
+const TRADE_MODE_KEY = "ai_quant_trade_mode_v1";
+
+const LOG_UPDATE_INTERVAL_OPTIONS: {
+  label: string;
+  value: LogUpdateIntervalValue;
+}[] = [
+  { label: "Realtime", value: "realtime" },
+  { label: "5 sec", value: "5sec" },
+  { label: "30 sec", value: "30sec" },
+  { label: "1 min", value: "1min" },
+];
+
+function getLogUpdateInterval(value: string | null): LogUpdateIntervalValue {
+  return LOG_UPDATE_INTERVAL_OPTIONS.some((option) => option.value === value)
+    ? (value as LogUpdateIntervalValue)
+    : "realtime";
+}
+
+function getTradeMode(value: string | null): TradingMode {
+  return value === "LIVE" ? "LIVE" : "PAPER";
+}
+
 export default function SettingsPage() {
-  const [tab, setTab] = useState<"exchange" | "strategy" | "notification">(
-    "exchange",
-  );
-
+  const [tab, setTab] = useState<SettingsTab>("exchange");
   const [userEmail, setUserEmail] = useState("");
-
   const [exchange, setExchange] = useState<ExchangeType>("upbit");
   const [apiKey, setApiKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
-
   const [balances, setBalances] = useState<BalanceResponse[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isBalanceLoading, setIsBalanceLoading] = useState(false);
-
   const [riskLevel, setRiskLevel] = useState("medium");
   const [autoTrading, setAutoTrading] = useState(false);
+  const [tradeMode, setTradeMode] = useState<TradingMode>(() => {
+    if (typeof window === "undefined") return "PAPER";
+    return getTradeMode(localStorage.getItem(TRADE_MODE_KEY));
+  });
+  const [logUpdateInterval, setLogUpdateInterval] =
+    useState<LogUpdateIntervalValue>(() => {
+      if (typeof window === "undefined") return "realtime";
+      return getLogUpdateInterval(localStorage.getItem(LOG_UPDATE_INTERVAL_KEY));
+    });
   const [telegram, setTelegram] = useState("");
-
-  const [paperWallet, setPaperWallet] = useState<any>(null);
+  const [isTelegramSaving, setIsTelegramSaving] = useState(false);
+  const [telegramLinkStatus, setTelegramLinkStatus] = useState("");
+  const [paperWallet, setPaperWallet] = useState<PaperWallet | null>(null);
   const [isWalletLoading, setIsWalletLoading] = useState(false);
+
+  function getAccessToken() {
+    return localStorage.getItem("token");
+  }
+
+  function loadUser() {
+    const user = localStorage.getItem("user");
+    if (!user) return;
+
+    try {
+      const parsed = JSON.parse(user) as { email?: string };
+      setUserEmail(parsed.email || "");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function loadTradingMode() {
+    const token = getAccessToken();
+    if (!token) return;
+
+    const res = await fetch("/api/trading-mode", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = (await res.json().catch(() => ({}))) as { mode?: string };
+
+    if (res.ok) {
+      const nextMode = getTradeMode(data.mode || "PAPER");
+      setTradeMode(nextMode);
+      localStorage.setItem(TRADE_MODE_KEY, nextMode);
+    }
+  }
+
+  async function saveTradingMode(nextMode: TradingMode) {
+    setTradeMode(nextMode);
+    localStorage.setItem(TRADE_MODE_KEY, nextMode);
+    window.dispatchEvent(new Event("storage"));
+
+    const token = getAccessToken();
+    if (!token) return;
+
+    await fetch("/api/trading-mode", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ mode: nextMode }),
+    });
+  }
 
   async function loadPaperWallet() {
     try {
       const token = getAccessToken();
-
       if (!token) return;
 
       const res = await fetch("/api/paper/wallet", {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
+      const data = (await res.json()) as { wallet?: PaperWallet };
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        return;
-      }
-
-      setPaperWallet(data.wallet || null);
+      if (res.ok) setPaperWallet(data.wallet || null);
     } catch (err) {
       console.error("LOAD_PAPER_WALLET_ERROR:", err);
     }
@@ -66,9 +142,8 @@ export default function SettingsPage() {
       setIsWalletLoading(true);
 
       const token = getAccessToken();
-
       if (!token) {
-        alert("로그인 필요");
+        alert("Login required.");
         return;
       }
 
@@ -78,60 +153,34 @@ export default function SettingsPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          cash: 10000,
-          currency: "USDT",
-        }),
+        body: JSON.stringify({ virtualBalance: 10_000_000 }),
       });
-
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data?.error || "가상머니 발급 실패");
-      }
-
-      alert("가상머니 발급 완료");
+      if (!res.ok) throw new Error(data?.error || "Paper account failed");
 
       await loadPaperWallet();
+      alert("Paper account is ready.");
     } catch (err) {
       console.error(err);
-      alert("가상머니 발급 실패");
+      alert("Paper account failed.");
     } finally {
       setIsWalletLoading(false);
     }
   }
 
-  function getAccessToken() {
-    return localStorage.getItem("token");
-  }
-
-  function loadUser() {
-    const user = localStorage.getItem("user");
-
-    if (!user) return;
-
-    try {
-      const parsed = JSON.parse(user);
-      setUserEmail(parsed?.email || "");
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
   async function loadBalances() {
     try {
-      const token = getAccessToken();
+      setIsBalanceLoading(true);
 
+      const token = getAccessToken();
       if (!token) {
         setBalances([]);
         return;
       }
 
       const res = await fetch("/api/exchange/balance", {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
 
       if (!res.ok) {
@@ -140,18 +189,20 @@ export default function SettingsPage() {
       }
 
       const data = await res.json();
-
       setBalances(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("BALANCE_FETCH_ERROR:", err);
       setBalances([]);
+    } finally {
+      setIsBalanceLoading(false);
     }
   }
+
   async function handleSaveExchange(e: React.FormEvent) {
     e.preventDefault();
 
     if (!apiKey || !secretKey) {
-      alert("API Key와 Secret Key를 입력해 주세요.");
+      alert("Please enter API Key and Secret Key.");
       return;
     }
 
@@ -159,9 +210,8 @@ export default function SettingsPage() {
       setIsSaving(true);
 
       const token = getAccessToken();
-
       if (!token) {
-        alert("로그인이 필요합니다.");
+        alert("Login required.");
         return;
       }
 
@@ -171,44 +221,77 @@ export default function SettingsPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          exchange,
-          apiKey,
-          secretKey,
-        }),
+        body: JSON.stringify({ exchange, apiKey, secretKey }),
       });
-
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data?.error || "키 저장 실패");
-      }
-
-      alert(`${exchange.toUpperCase()} API 키 저장 완료`);
+      if (!res.ok) throw new Error(data?.error || "Save failed");
 
       setApiKey("");
       setSecretKey("");
-
       await loadBalances();
+      alert(`${exchange.toUpperCase()} API key saved.`);
     } catch (err) {
       console.error("SAVE_EXCHANGE_ERROR:", err);
-      alert("거래소 키 저장 중 오류가 발생했습니다.");
+      alert("Failed to save exchange API key.");
     } finally {
       setIsSaving(false);
     }
   }
 
+  async function handleLinkTelegram() {
+    try {
+      setIsTelegramSaving(true);
+      setTelegramLinkStatus("");
+
+      const token = getAccessToken();
+      if (!token) {
+        alert("Login required.");
+        return;
+      }
+
+      if (!telegram.trim()) {
+        alert("Please enter Telegram Chat ID.");
+        return;
+      }
+
+      const res = await fetch("/api/telegram/link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ telegramChatId: telegram.trim() }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data?.error || "Telegram link failed");
+
+      setTelegramLinkStatus("Telegram account linked.");
+    } catch (err) {
+      console.error("TELEGRAM_LINK_ERROR:", err);
+      setTelegramLinkStatus("Telegram link failed.");
+    } finally {
+      setIsTelegramSaving(false);
+    }
+  }
+
   useEffect(() => {
     loadUser();
-    loadBalances();
-    loadPaperWallet();
+    void loadBalances();
+    void loadPaperWallet();
+    void loadTradingMode();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(LOG_UPDATE_INTERVAL_KEY, logUpdateInterval);
+    window.dispatchEvent(new Event("storage"));
+  }, [logUpdateInterval]);
 
   const renderBalanceRows = (item: BalanceResponse) => {
     const total = item.balance?.total || {};
     const free = item.balance?.free || {};
     const used = item.balance?.used || {};
-
     const rows = Object.keys(total)
       .filter((asset) => Number(total[asset]) > 0)
       .slice(0, 20);
@@ -216,7 +299,7 @@ export default function SettingsPage() {
     if (item.error) {
       return (
         <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm text-rose-200">
-          API 키가 잘못됐거나 거래소 권한이 부족합니다.
+          API key is invalid or missing balance permission.
         </div>
       );
     }
@@ -224,7 +307,7 @@ export default function SettingsPage() {
     if (rows.length === 0) {
       return (
         <div className="mt-3 rounded-xl border border-slate-800 bg-[#0B1420] p-3 text-sm text-slate-500">
-          표시할 잔고가 없습니다.
+          No visible balance.
         </div>
       );
     }
@@ -232,10 +315,10 @@ export default function SettingsPage() {
     return (
       <div className="mt-3 overflow-hidden rounded-xl border border-slate-800">
         <div className="grid grid-cols-4 bg-[#0B1420] px-3 py-2 text-xs text-slate-500">
-          <div>자산</div>
-          <div className="text-right">사용가능</div>
-          <div className="text-right">주문중</div>
-          <div className="text-right">총수량</div>
+          <div>Asset</div>
+          <div className="text-right">Free</div>
+          <div className="text-right">Used</div>
+          <div className="text-right">Total</div>
         </div>
 
         {rows.map((asset) => (
@@ -244,15 +327,12 @@ export default function SettingsPage() {
             className="grid grid-cols-4 border-t border-slate-800 px-3 py-2 text-sm"
           >
             <div className="font-semibold text-slate-100">{asset}</div>
-
             <div className="text-right text-slate-300">
               {Number(free[asset] || 0).toLocaleString()}
             </div>
-
             <div className="text-right text-slate-400">
               {Number(used[asset] || 0).toLocaleString()}
             </div>
-
             <div className="text-right text-emerald-300">
               {Number(total[asset] || 0).toLocaleString()}
             </div>
@@ -267,28 +347,24 @@ export default function SettingsPage() {
       <div className="sticky top-0 z-50 border-b border-slate-800 bg-[#0B1420]/95 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div>
-            <div className="text-sm text-slate-400">로그인 계정</div>
-
+            <div className="text-sm text-slate-400">Account</div>
             <div className="text-lg font-semibold">
-              {userEmail || "로그인 정보 없음"}
+              {userEmail || "Not logged in"}
             </div>
           </div>
-
-          <button className="h-10 rounded-xl border border-slate-700 bg-[#101C2E] px-4 text-sm">
-            비밀번호 변경
-          </button>
         </div>
       </div>
+
       <div className="mx-auto max-w-5xl space-y-6 px-6 py-6">
         <div className="flex gap-2">
           {[
-            ["exchange", "거래소"],
-            ["strategy", "퀀트"],
-            ["notification", "알림"],
+            ["exchange", "Exchange"],
+            ["strategy", "Strategy"],
+            ["notification", "Notification"],
           ].map(([key, label]) => (
             <button
               key={key}
-              onClick={() => setTab(key as any)}
+              onClick={() => setTab(key as SettingsTab)}
               className={`h-10 rounded-xl px-4 text-sm transition ${
                 tab === key
                   ? "border border-emerald-400 bg-emerald-500/20 text-emerald-200"
@@ -306,18 +382,16 @@ export default function SettingsPage() {
               onSubmit={handleSaveExchange}
               className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 shadow-[0_10px_30px_rgba(0,0,0,0.35)] lg:col-span-2"
             >
-              <h2 className="text-lg font-semibold text-slate-100">API 연결</h2>
-
+              <h2 className="text-lg font-semibold text-slate-100">Exchange API</h2>
               <p className="mt-1 text-sm text-slate-500">
-                저장 후 자동으로 잔고를 조회합니다.
+                Save Upbit or Binance keys for balance lookup and LIVE trading.
               </p>
 
               <div className="mt-5 space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">
-                    거래소
-                  </label>
-
+                <label className="block">
+                  <span className="mb-2 block text-sm text-slate-400">
+                    Exchange
+                  </span>
                   <select
                     value={exchange}
                     onChange={(e) =>
@@ -328,26 +402,24 @@ export default function SettingsPage() {
                     <option value="upbit">Upbit</option>
                     <option value="binance">Binance</option>
                   </select>
-                </div>
+                </label>
 
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">
+                <label className="block">
+                  <span className="mb-2 block text-sm text-slate-400">
                     API Key
-                  </label>
-
+                  </span>
                   <input
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder="Access / API Key"
                     className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none placeholder:text-slate-600 focus:border-emerald-400/50"
                   />
-                </div>
+                </label>
 
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">
+                <label className="block">
+                  <span className="mb-2 block text-sm text-slate-400">
                     Secret Key
-                  </label>
-
+                  </span>
                   <input
                     value={secretKey}
                     onChange={(e) => setSecretKey(e.target.value)}
@@ -355,18 +427,13 @@ export default function SettingsPage() {
                     placeholder="Secret Key"
                     className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none placeholder:text-slate-600 focus:border-emerald-400/50"
                   />
-                </div>
-
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-100">
-                  처음에는 거래소 API 권한을 조회 전용으로 테스트하고, 매매
-                  권한은 주문 API 검증 후 켜는 걸 추천합니다.
-                </div>
+                </label>
 
                 <button
                   disabled={isSaving}
                   className="h-11 w-full rounded-xl border border-emerald-400/30 bg-emerald-500/15 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
                 >
-                  {isSaving ? "저장 중..." : "API 키 저장"}
+                  {isSaving ? "Saving..." : "Save API Key"}
                 </button>
               </div>
             </form>
@@ -375,11 +442,10 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold text-slate-100">
-                    거래소 잔고
+                    Exchange Balance
                   </h2>
-
                   <p className="mt-1 text-sm text-slate-500">
-                    저장된 API 키 기준으로 CCXT에서 불러온 잔고입니다.
+                    Loaded through the saved exchange API keys.
                   </p>
                 </div>
 
@@ -388,14 +454,14 @@ export default function SettingsPage() {
                   disabled={isBalanceLoading}
                   className="h-10 rounded-xl border border-slate-700 bg-[#0B1420] px-4 text-sm text-slate-200 hover:bg-slate-900 disabled:opacity-60"
                 >
-                  {isBalanceLoading ? "조회 중..." : "새로고침"}
+                  {isBalanceLoading ? "Loading..." : "Refresh"}
                 </button>
               </div>
 
               <div className="mt-5 space-y-4">
                 {balances.length === 0 && (
                   <div className="rounded-xl border border-slate-800 bg-[#0B1420] p-4 text-sm text-slate-500">
-                    아직 저장된 거래소 키가 없거나 잔고를 불러오지 못했습니다.
+                    No exchange balance loaded yet.
                   </div>
                 )}
 
@@ -408,7 +474,6 @@ export default function SettingsPage() {
                       <div className="text-base font-semibold text-slate-100">
                         {item.exchange.toUpperCase()}
                       </div>
-
                       <span
                         className={`rounded-lg border px-2 py-1 text-xs ${
                           item.error
@@ -429,73 +494,146 @@ export default function SettingsPage() {
         )}
 
         {tab === "strategy" && (
-          <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
-            <h2 className="text-lg font-semibold">퀀트 설정</h2>
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
+              <h2 className="text-lg font-semibold">Trading Mode</h2>
 
-            <select
-              value={riskLevel}
-              onChange={(e) => setRiskLevel(e.target.value)}
-              className="h-11 w-full rounded-xl bg-[#0B1420] px-3"
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
+              <div className="grid grid-cols-2 gap-3">
+                {(["PAPER", "LIVE"] as TradingMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => void saveTradingMode(mode)}
+                    className={`h-12 rounded-xl border text-sm font-semibold transition ${
+                      tradeMode === mode
+                        ? mode === "LIVE"
+                          ? "border-rose-400 bg-rose-500/20 text-rose-200"
+                          : "border-emerald-400 bg-emerald-500/20 text-emerald-200"
+                        : "border-slate-800 bg-[#0B1420] text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {mode === "LIVE" ? "LIVE 실전매매" : "PAPER 가상매매"}
+                  </button>
+                ))}
+              </div>
 
-            <label className="flex gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={autoTrading}
-                onChange={(e) => setAutoTrading(e.target.checked)}
-              />
-              자동매매
-            </label>
+              {tradeMode === "PAPER" ? (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+                  PAPER mode uses virtual KRW only. Real Upbit/Binance orders are blocked.
+                </div>
+              ) : (
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm text-rose-100">
+                  LIVE mode can send real exchange orders after execution confirmation.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
+              <h2 className="text-lg font-semibold">Strategy Settings</h2>
+
+              <label className="block">
+                <span className="mb-2 block text-sm text-slate-400">
+                  Risk Level
+                </span>
+                <select
+                  value={riskLevel}
+                  onChange={(e) => setRiskLevel(e.target.value)}
+                  className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none focus:border-emerald-400/50"
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-sm text-slate-400">
+                  Log Update Interval
+                </span>
+                <select
+                  value={logUpdateInterval}
+                  onChange={(e) =>
+                    setLogUpdateInterval(
+                      e.target.value as LogUpdateIntervalValue,
+                    )
+                  }
+                  className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none focus:border-emerald-400/50"
+                >
+                  {LOG_UPDATE_INTERVAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={autoTrading}
+                  onChange={(e) => setAutoTrading(e.target.checked)}
+                />
+                Auto trading enabled
+              </label>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-100">
+                    Paper Account
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Default virtual balance is 10,000,000 KRW.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleCreatePaperWallet}
+                  disabled={isWalletLoading}
+                  className="h-10 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-4 text-sm font-semibold text-emerald-200 disabled:opacity-60"
+                >
+                  {isWalletLoading ? "Preparing..." : "Reset Paper Account"}
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-xl border border-slate-800 bg-[#0B1420] p-4">
+                <div className="text-sm text-slate-400">Virtual Balance</div>
+                <div className="mt-2 text-3xl font-bold text-emerald-300">
+                  {paperWallet
+                    ? `${Number(paperWallet.cash).toLocaleString()} ${paperWallet.currency}`
+                    : "Not created"}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
         {tab === "notification" && (
           <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5 space-y-4">
-            <h2 className="text-lg font-semibold">알림</h2>
+            <h2 className="text-lg font-semibold">Telegram Link</h2>
 
             <input
               value={telegram}
               onChange={(e) => setTelegram(e.target.value)}
-              placeholder="텔레그램 ID"
-              className="h-11 w-full rounded-xl bg-[#0B1420] px-3"
+              placeholder="Telegram Chat ID"
+              className="h-11 w-full rounded-xl border border-slate-800 bg-[#0B1420] px-3 text-sm outline-none focus:border-emerald-400/50"
             />
+
+            <button
+              onClick={handleLinkTelegram}
+              disabled={isTelegramSaving}
+              className="h-11 w-full rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-sm font-semibold text-emerald-200 disabled:opacity-60"
+            >
+              {isTelegramSaving ? "Linking..." : "Link Telegram Account"}
+            </button>
+
+            {telegramLinkStatus && (
+              <div className="rounded-xl border border-slate-800 bg-[#0B1420] p-3 text-sm text-slate-300">
+                {telegramLinkStatus}
+              </div>
+            )}
           </div>
         )}
-      </div>
-      <div className="rounded-2xl border border-slate-800 bg-[#101C2E] p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-100">
-              가상 투자 계좌
-            </h2>
-
-            <p className="mt-1 text-sm text-slate-500">
-              자동매매 및 테스트용 Paper Trading 계좌
-            </p>
-          </div>
-
-          <button
-            onClick={handleCreatePaperWallet}
-            disabled={isWalletLoading}
-            className="h-10 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-4 text-sm font-semibold text-emerald-200"
-          >
-            {isWalletLoading ? "발급 중..." : "가상머니 발급"}
-          </button>
-        </div>
-
-        <div className="mt-5 rounded-xl border border-slate-800 bg-[#0B1420] p-4">
-          <div className="text-sm text-slate-400">보유 가상머니</div>
-
-          <div className="mt-2 text-3xl font-bold text-emerald-300">
-            {paperWallet
-              ? `${Number(paperWallet.cash).toLocaleString()} ${paperWallet.currency}`
-              : "미발급"}
-          </div>
-        </div>
       </div>
     </div>
   );

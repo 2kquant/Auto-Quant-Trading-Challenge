@@ -1,87 +1,138 @@
 import { NextRequest, NextResponse } from "next/server";
-import jwt from "jsonwebtoken";
 import { prisma } from "@/lib/prisma";
+import { getRequestUserId, isTelegramAdmin } from "@/lib/auth/request-user";
 
-type JwtPayload = {
-  id?: string;
-  userId?: string;
-  email?: string;
+const DEFAULT_PAPER_BALANCE = 10_000_000;
+
+type PaperAccountDelegate = {
+  upsert: (args: {
+    where: { userId: string };
+    update: { virtualBalance?: number; virtualPnl?: number };
+    create: { userId: string; virtualBalance: number; virtualPnl?: number };
+  }) => Promise<{
+    userId: string;
+    virtualBalance: number;
+    virtualPnl: number;
+    updatedAt: Date;
+  }>;
+  findUnique: (args: {
+    where: { userId: string };
+  }) => Promise<{
+    userId: string;
+    virtualBalance: number;
+    virtualPnl: number;
+    updatedAt: Date;
+  } | null>;
 };
 
-function getUserId(req: NextRequest) {
-  const authToken = req.headers.get("authorization")?.replace("Bearer ", "");
-  const cookieToken = req.cookies.get("token")?.value;
-  const token = authToken || cookieToken;
+type PrismaWithPaperAccount = typeof prisma & {
+  paperAccount: PaperAccountDelegate;
+  telegramUserLink: {
+    findUnique: (args: {
+      where: { telegramChatId: string };
+      select: { userId: boolean };
+    }) => Promise<{ userId: string } | null>;
+  };
+};
 
-  if (!token) return null;
+async function getUserId(req: NextRequest) {
+  const webUserId = getRequestUserId(req);
+  if (webUserId) return webUserId;
 
-  const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
+  if (!isTelegramAdmin(req)) return null;
 
-  return decoded.id || decoded.userId || null;
+  const chatId = req.nextUrl.searchParams.get("telegramChatId")?.trim();
+
+  if (!chatId) return null;
+
+  const db = prisma as PrismaWithPaperAccount;
+  const link = await db.telegramUserLink.findUnique({
+    where: { telegramChatId: chatId },
+    select: { userId: true },
+  });
+
+  return link?.userId || null;
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const userId = getUserId(req);
+    const userId = await getUserId(req);
 
     if (!userId) {
-      return NextResponse.json({ error: "로그인 필요" }, { status: 401 });
+      return NextResponse.json({ error: "Login required" }, { status: 401 });
     }
 
-    const wallet = await prisma.paperWallet.findUnique({
+    const db = prisma as PrismaWithPaperAccount;
+    const account = await db.paperAccount.upsert({
       where: { userId },
+      update: {},
+      create: {
+        userId,
+        virtualBalance: DEFAULT_PAPER_BALANCE,
+        virtualPnl: 0,
+      },
     });
 
     return NextResponse.json({
-      wallet,
+      account,
+      wallet: {
+        cash: account.virtualBalance,
+        currency: "KRW",
+      },
     });
   } catch (err) {
     console.error("PAPER_WALLET_GET_ERROR:", err);
-
-    return NextResponse.json({ error: "가상 지갑 조회 실패" }, { status: 500 });
+    return NextResponse.json({ error: "Paper account failed" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const userId = getUserId(req);
+    const userId = await getUserId(req);
 
     if (!userId) {
-      return NextResponse.json({ error: "로그인 필요" }, { status: 401 });
+      return NextResponse.json({ error: "Login required" }, { status: 401 });
     }
 
-    const body = await req.json().catch(() => ({}));
+    const body = (await req.json().catch(() => ({}))) as {
+      virtualBalance?: number;
+      cash?: number;
+    };
+    const virtualBalance = Number(
+      body.virtualBalance ?? body.cash ?? DEFAULT_PAPER_BALANCE,
+    );
 
-    const cash = Number(body.cash || 10000);
-    const currency = String(body.currency || "USDT").toUpperCase();
-
-    if (!Number.isFinite(cash) || cash <= 0) {
+    if (!Number.isFinite(virtualBalance) || virtualBalance <= 0) {
       return NextResponse.json(
-        { error: "cash 값이 올바르지 않습니다." },
+        { error: "virtualBalance must be greater than 0" },
         { status: 400 },
       );
     }
 
-    const wallet = await prisma.paperWallet.upsert({
+    const db = prisma as PrismaWithPaperAccount;
+    const account = await db.paperAccount.upsert({
       where: { userId },
       update: {
-        cash,
-        currency,
+        virtualBalance,
+        virtualPnl: 0,
       },
       create: {
         userId,
-        cash,
-        currency,
+        virtualBalance,
+        virtualPnl: 0,
       },
     });
 
     return NextResponse.json({
-      message: "가상머니 발급 완료",
-      wallet,
+      message: "Paper account ready",
+      account,
+      wallet: {
+        cash: account.virtualBalance,
+        currency: "KRW",
+      },
     });
   } catch (err) {
     console.error("PAPER_WALLET_POST_ERROR:", err);
-
-    return NextResponse.json({ error: "가상머니 발급 실패" }, { status: 500 });
+    return NextResponse.json({ error: "Paper account failed" }, { status: 500 });
   }
 }

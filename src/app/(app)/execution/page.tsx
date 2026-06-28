@@ -1,9 +1,12 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type AutoStatus = "IDLE" | "RUNNING" | "PAUSED" | "STOPPED";
 type TradeMode = "PAPER" | "LIVE";
+type ExchangeName = "upbit" | "binance";
+type LogType = "BUY" | "SELL" | "INFO" | "ERROR";
+type LogUpdateIntervalValue = "realtime" | "5sec" | "30sec" | "1min";
 
 type AiSignal = {
   market: string;
@@ -11,6 +14,10 @@ type AiSignal = {
   probability?: number;
   signal?: number;
   threshold?: number;
+  rsi?: number;
+  volume?: number;
+  trendProbability?: number;
+  trend_probability?: number;
   error?: string;
 };
 
@@ -35,6 +42,26 @@ type TradeHistoryItem = {
   createdAt: string;
 };
 
+type ActivityLog = {
+  id: string;
+  type: LogType;
+  time: string;
+  message: string;
+};
+
+type LiveOrderResponse = {
+  success?: boolean;
+  exchange?: ExchangeName;
+  inputMarket?: string;
+  symbol?: string;
+  side?: "BUY" | "SELL";
+  filled?: number;
+  average?: number;
+  cost?: number;
+  status?: string;
+  error?: string;
+};
+
 type PaperAccount = {
   cash: number;
   positions: Position[];
@@ -42,6 +69,21 @@ type PaperAccount = {
 };
 
 const STORAGE_KEY = "ai_quant_paper_account_v1";
+const LOG_UPDATE_INTERVAL_KEY = "ai_quant_log_update_interval_v1";
+const AI_CONFIDENCE_KEY = "ai_quant_ai_confidence_pct_v1";
+const TRADE_MODE_KEY = "ai_quant_trade_mode_v1";
+const LOG_LIMIT = 150;
+
+const LOG_UPDATE_INTERVAL_OPTIONS: {
+  label: string;
+  value: LogUpdateIntervalValue;
+  ms: number;
+}[] = [
+  { label: "Realtime", value: "realtime", ms: 0 },
+  { label: "5 sec", value: "5sec", ms: 5000 },
+  { label: "30 sec", value: "30sec", ms: 30000 },
+  { label: "1 min", value: "1min", ms: 60000 },
+];
 
 const DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-ADA"];
 
@@ -58,7 +100,7 @@ function safeNumber(value: unknown, fallback = 0) {
 
 function formatKrw(value: unknown) {
   const n = safeNumber(value, 0);
-  return `₩${Math.round(n).toLocaleString("ko-KR")}`;
+  return `${Math.round(n).toLocaleString("ko-KR")} KRW`;
 }
 
 function formatPct(value: unknown, digits = 2) {
@@ -75,6 +117,48 @@ function classByNumber(value: unknown) {
   if (n > 0) return "text-emerald-300";
   if (n < 0) return "text-rose-300";
   return "text-slate-100";
+}
+
+function getLogTime() {
+  return new Date().toLocaleTimeString("en-GB", { hour12: false });
+}
+
+function createLog(type: LogType, message: string): ActivityLog {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    type,
+    time: getLogTime(),
+    message,
+  };
+}
+
+function getLogUpdateInterval(value: string | null): LogUpdateIntervalValue {
+  return LOG_UPDATE_INTERVAL_OPTIONS.some((option) => option.value === value)
+    ? (value as LogUpdateIntervalValue)
+    : "realtime";
+}
+
+function getLogUpdateIntervalMs(value: LogUpdateIntervalValue) {
+  return (
+    LOG_UPDATE_INTERVAL_OPTIONS.find((option) => option.value === value)?.ms ?? 0
+  );
+}
+function getLogUpdateIntervalLabel(value: LogUpdateIntervalValue) {
+  return (
+    LOG_UPDATE_INTERVAL_OPTIONS.find((option) => option.value === value)
+      ?.label ?? "Realtime"
+  );
+}
+
+function getStoredTradeMode(value: string | null): TradeMode {
+  return value === "LIVE" ? "LIVE" : "PAPER";
+}
+
+function getLogTypeClass(type: LogType) {
+  if (type === "BUY") return "text-emerald-300";
+  if (type === "SELL") return "text-rose-300";
+  if (type === "ERROR") return "text-yellow-300";
+  return "text-slate-400";
 }
 
 function getDefaultAccount(): PaperAccount {
@@ -97,19 +181,23 @@ function loadAccount(): PaperAccount {
   }
 
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Partial<PaperAccount>;
 
     return {
       cash: safeNumber(parsed.cash, 10_000_000),
       positions: Array.isArray(parsed.positions)
-        ? parsed.positions.map((p: any) => ({
-            market: String(p.market),
-            qty: safeNumber(p.qty),
-            avgPrice: safeNumber(p.avgPrice),
-            investedKrw: safeNumber(p.investedKrw),
-            openedAt: p.openedAt ?? new Date().toISOString(),
-            probability: safeNumber(p.probability),
-          }))
+        ? parsed.positions.map((p) => {
+            const position = p as Partial<Position>;
+
+            return {
+              market: String(position.market),
+              qty: safeNumber(position.qty),
+              avgPrice: safeNumber(position.avgPrice),
+              investedKrw: safeNumber(position.investedKrw),
+              openedAt: position.openedAt ?? new Date().toISOString(),
+              probability: safeNumber(position.probability),
+            };
+          })
         : [],
       history: Array.isArray(parsed.history) ? parsed.history : [],
     };
@@ -172,19 +260,46 @@ export default function ExecutionPage() {
   const [signals, setSignals] = useState<AiSignal[]>([]);
   const [autoStatus, setAutoStatus] = useState<AutoStatus>("IDLE");
   const [tradeMode, setTradeMode] = useState<TradeMode>("PAPER");
+  const [liveExchange, setLiveExchange] = useState<ExchangeName>("upbit");
+  const [liveOrderAmount, setLiveOrderAmount] = useState("10000");
+  const [liveTradingConfirmed, setLiveTradingConfirmed] = useState(false);
 
   const [orderKrw, setOrderKrw] = useState("10000000");
   const [maxPositions, setMaxPositions] = useState("3");
   const [cycleSec, setCycleSec] = useState("10");
+  const [aiConfidencePct, setAiConfidencePct] = useState(() => {
+    if (typeof window === "undefined") return "70";
+    return localStorage.getItem(AI_CONFIDENCE_KEY) || "70";
+  });
   const [stopLossPct, setStopLossPct] = useState("3");
   const [takeProfitPct, setTakeProfitPct] = useState("5");
 
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<ActivityLog[]>([]);
+  const [logUpdateInterval, setLogUpdateInterval] =
+    useState<LogUpdateIntervalValue>("realtime");
   const loopRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<AutoStatus>("IDLE");
+  const pendingLogsRef = useRef<ActivityLog[]>([]);
+  const logUpdateIntervalRef = useRef<LogUpdateIntervalValue>("realtime");
+  const tradeModeRef = useRef<TradeMode>("PAPER");
+  const remoteCommandIdRef = useRef(0);
+  const logUpdateIntervalMs = getLogUpdateIntervalMs(logUpdateInterval);
+  const confidenceTriggerPct = Math.min(
+    100,
+    Math.max(0, safeNumber(aiConfidencePct, 70)),
+  );
+  const confidenceTrigger = confidenceTriggerPct / 100;
 
   useEffect(() => {
     setAccount(loadAccount());
+    const savedInterval = getLogUpdateInterval(
+      localStorage.getItem(LOG_UPDATE_INTERVAL_KEY),
+    );
+    setLogUpdateInterval(savedInterval);
+    logUpdateIntervalRef.current = savedInterval;
+    const savedMode = getStoredTradeMode(localStorage.getItem(TRADE_MODE_KEY));
+    setTradeMode(savedMode);
+    tradeModeRef.current = savedMode;
     refreshSignals();
   }, []);
 
@@ -193,9 +308,68 @@ export default function ExecutionPage() {
   }, [autoStatus]);
 
   useEffect(() => {
+    tradeModeRef.current = tradeMode;
+  }, [tradeMode]);
+
+  useEffect(() => {
+    localStorage.setItem(AI_CONFIDENCE_KEY, String(confidenceTriggerPct));
+  }, [confidenceTriggerPct]);
+
+  useEffect(() => {
+    const syncLogUpdateInterval = () => {
+      setLogUpdateInterval(
+        getLogUpdateInterval(localStorage.getItem(LOG_UPDATE_INTERVAL_KEY)),
+      );
+      const nextMode = getStoredTradeMode(localStorage.getItem(TRADE_MODE_KEY));
+      setTradeMode(nextMode);
+      tradeModeRef.current = nextMode;
+    };
+
+    window.addEventListener("storage", syncLogUpdateInterval);
+    window.addEventListener("focus", syncLogUpdateInterval);
+
+    return () => {
+      window.removeEventListener("storage", syncLogUpdateInterval);
+      window.removeEventListener("focus", syncLogUpdateInterval);
+    };
+  }, []);
+
+  const flushPendingLogs = () => {
+    if (pendingLogsRef.current.length === 0) return;
+
+    setLogs((prev) => {
+      const next = [...pendingLogsRef.current, ...prev].slice(0, LOG_LIMIT);
+      pendingLogsRef.current = [];
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    logUpdateIntervalRef.current = logUpdateInterval;
+
+    if (logUpdateIntervalMs === 0) {
+      flushPendingLogs();
+      return;
+    }
+
+    const timer = setInterval(flushPendingLogs, logUpdateIntervalMs);
+    return () => clearInterval(timer);
+  }, [logUpdateInterval, logUpdateIntervalMs]);
+
+  useEffect(() => {
     return () => {
       if (loopRef.current) clearInterval(loopRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    void loadTradeMode();
+
+    const timer = setInterval(() => {
+      void loadTradeMode();
+    }, 5000);
+
+    return () => clearInterval(timer);
   }, []);
 
   const signalMap = useMemo(() => {
@@ -225,22 +399,409 @@ export default function ExecutionPage() {
   const totalEquity = (account?.cash ?? 0) + totalPositionValue;
   const totalPnlPct = investedKrw > 0 ? (totalPnl / investedKrw) * 100 : 0;
 
+  const isTradeTriggerSignal = (signal: AiSignal) => {
+    return (
+      !signal.error &&
+      safeNumber(signal.signal) === 1 &&
+      safeNumber(signal.probability) >= confidenceTrigger
+    );
+  };
+
   const buySignals = useMemo(() => {
     return signals
-      .filter((s) => !s.error && safeNumber(s.signal) === 1)
+      .filter(
+        (signal) =>
+          !signal.error &&
+          safeNumber(signal.signal) === 1 &&
+          safeNumber(signal.probability) >= confidenceTrigger,
+      )
       .sort((a, b) => safeNumber(b.probability) - safeNumber(a.probability));
-  }, [signals]);
+  }, [signals, confidenceTrigger]);
 
   const bestSignal = buySignals[0];
 
-  const addLog = (text: string) => {
-    const line = `${new Date().toLocaleTimeString()}  ${text}`;
-    setLogs((prev) => [line, ...prev].slice(0, 150));
+  const sendTelegramAlert = async (payload: {
+    type: "BUY" | "SELL" | "ERROR";
+    market?: string;
+    price?: number;
+    exitPrice?: number;
+    probability?: number;
+    pnl?: number;
+    message?: string;
+  }) => {
+    const token = getAccessToken();
+
+    if (!token) return;
+
+    try {
+      await fetch("/api/telegram/alert", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // Telegram alerts are best-effort and should not block trading.
+    }
+  };
+
+  const addLog = (type: LogType, message: string) => {
+    const nextLog = createLog(type, message);
+
+    if (type === "ERROR") {
+      void sendTelegramAlert({
+        type: "ERROR",
+        message,
+      });
+    }
+
+    if (getLogUpdateIntervalMs(logUpdateIntervalRef.current) === 0) {
+      setLogs((prev) => [nextLog, ...prev].slice(0, LOG_LIMIT));
+      return;
+    }
+
+    pendingLogsRef.current = [nextLog, ...pendingLogsRef.current].slice(
+      0,
+      LOG_LIMIT,
+    );
   };
 
   const updateAccount = (next: PaperAccount) => {
     saveAccount(next);
     setAccount(next);
+  };
+
+  const getAccessToken = () => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("token") || "";
+  };
+
+  const saveTradeMode = async (nextMode: TradeMode) => {
+    setTradeMode(nextMode);
+    tradeModeRef.current = nextMode;
+    localStorage.setItem(TRADE_MODE_KEY, nextMode);
+
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      await fetch("/api/trading-mode", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ mode: nextMode }),
+      });
+    } catch {
+      addLog("ERROR", "trading mode sync failed");
+    }
+  };
+
+  const loadTradeMode = async () => {
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      const res = await fetch("/api/trading-mode", {
+        cache: "no-store",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        mode?: TradeMode;
+      };
+
+      if (res.ok) {
+        const nextMode = getStoredTradeMode(data.mode || "PAPER");
+        setTradeMode(nextMode);
+        tradeModeRef.current = nextMode;
+        localStorage.setItem(TRADE_MODE_KEY, nextMode);
+      }
+    } catch {
+      // Mode sync is best-effort. Local mode still controls the screen.
+    }
+  };
+
+  const persistTradeLog = async (payload: {
+    side: "BUY" | "SELL" | "HOLD" | "ERROR";
+    market: string;
+    signal?: string;
+    probability?: number;
+    price?: number;
+    entryPrice?: number;
+    exitPrice?: number;
+    pnl?: number;
+  }) => {
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      await fetch("/api/trade-logs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          mode: tradeModeRef.current,
+          ...payload,
+        }),
+      });
+    } catch {
+      // Trade log persistence should not block the engine.
+    }
+  };
+
+  const persistAiDecisionLogs = async (list: AiSignal[]) => {
+    const token = getAccessToken();
+    if (!token || list.length === 0) return;
+
+    try {
+      await fetch("/api/ai-logs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          logs: list.map((signal) => {
+            const trendProbability = safeNumber(
+              signal.trendProbability ?? signal.trend_probability,
+              safeNumber(signal.probability),
+            );
+            const finalDecision = isTradeTriggerSignal(signal)
+              ? "BUY"
+              : safeNumber(signal.signal) === 1
+                ? "HOLD"
+                : "HOLD";
+
+            return {
+              market: signal.market,
+              rsi: safeNumber(signal.rsi),
+              volume: safeNumber(signal.volume),
+              trendProbability,
+              confidence: confidenceTrigger,
+              finalDecision,
+              mode: tradeModeRef.current,
+            };
+          }),
+        }),
+      });
+    } catch {
+      // AI decision logging is best-effort.
+    }
+  };
+
+  const executeLiveOrder = async (params: {
+    side: "BUY" | "SELL";
+    market: string;
+    quoteAmount?: number;
+    baseAmount?: number;
+  }) => {
+    if (!liveTradingConfirmed) {
+      addLog("ERROR", "LIVE trading confirmation is required");
+      return null;
+    }
+
+    const token = getAccessToken();
+
+    if (!token) {
+      addLog("ERROR", "login token missing. Please login again");
+      return null;
+    }
+
+    const res = await fetch("/api/exchange/order", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        exchange: liveExchange,
+        market: params.market,
+        side: params.side,
+        quoteAmount: params.quoteAmount,
+        baseAmount: params.baseAmount,
+        confirmText: "LIVE_TRADE",
+      }),
+    });
+
+    const data = (await res.json()) as LiveOrderResponse;
+
+    if (!res.ok || !data.success) {
+      addLog("ERROR", data.error || "LIVE order failed");
+      return null;
+    }
+
+    return data;
+  };
+
+  const executePaperDbOrder = async (params: {
+    side: "BUY" | "SELL";
+    market: string;
+    amount: number;
+    probability?: number;
+  }) => {
+    const token = getAccessToken();
+
+    if (!token) return;
+
+    try {
+      const res = await fetch("/api/paper/order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          exchange: "paper",
+          market: params.market,
+          side: params.side,
+          amount: params.amount,
+          probability: params.probability,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        addLog("ERROR", data.error || "paper order DB sync failed");
+      }
+    } catch {
+      addLog("ERROR", "paper order DB sync failed");
+    }
+  };
+
+  const executeLiveBuy = async (signal: AiSignal) => {
+    const live = loadAccount();
+
+    if (hasPosition(signal.market, live)) {
+      addLog("INFO", `already tracking ${signal.market}`);
+      return false;
+    }
+
+    if (live.positions.length >= safeNumber(maxPositions, 1)) {
+      addLog("INFO", "max positions reached");
+      return false;
+    }
+
+    const quoteAmount = safeNumber(liveOrderAmount, 0);
+    const signalPrice = safeNumber(signal.price);
+
+    if (quoteAmount <= 0) {
+      addLog("ERROR", "LIVE order amount must be greater than 0");
+      return false;
+    }
+
+    if (signalPrice <= 0) {
+      addLog("ERROR", `invalid price ${signal.market}`);
+      return false;
+    }
+
+    const order = await executeLiveOrder({
+      side: "BUY",
+      market: signal.market,
+      quoteAmount,
+    });
+
+    if (!order) return false;
+
+    const qty = safeNumber(order.filled, quoteAmount / signalPrice);
+
+    const position: Position = {
+      market: signal.market,
+      qty,
+      avgPrice: signalPrice,
+      investedKrw: quoteAmount,
+      openedAt: new Date().toISOString(),
+      probability: safeNumber(signal.probability),
+    };
+
+    const trade: TradeHistoryItem = {
+      id: `${Date.now()}-${signal.market}-LIVE-BUY`,
+      type: "BUY",
+      market: signal.market,
+      qty,
+      price: signalPrice,
+      krw: quoteAmount,
+      probability: safeNumber(signal.probability),
+      createdAt: new Date().toISOString(),
+    };
+
+    updateAccount({
+      cash: live.cash,
+      positions: [position, ...live.positions],
+      history: [trade, ...live.history],
+    });
+
+    addLog(
+      "BUY",
+      `LIVE BUY ${liveExchange.toUpperCase()} ${order.symbol || signal.market} / amount ${quoteAmount.toLocaleString("ko-KR")} / status ${order.status || "submitted"}`,
+    );
+    void sendTelegramAlert({
+      type: "BUY",
+      market: signal.market.replace("KRW-", ""),
+      price: signalPrice,
+      probability: safeNumber(signal.probability),
+    });
+
+    return true;
+  };
+
+  const executeLiveSell = async (market: string, reason: string) => {
+    const live = loadAccount();
+    const position = live.positions.find((p) => p.market === market);
+
+    if (!position) return false;
+
+    const signal = signalMap[market];
+    const price = safeNumber(signal?.price, position.avgPrice);
+    const value = position.qty * price;
+    const pnl = value - position.investedKrw;
+    const pnlPct =
+      position.investedKrw > 0 ? (pnl / position.investedKrw) * 100 : 0;
+
+    const order = await executeLiveOrder({
+      side: "SELL",
+      market,
+      baseAmount: position.qty,
+    });
+
+    if (!order) return false;
+
+    const trade: TradeHistoryItem = {
+      id: `${Date.now()}-${market}-LIVE-SELL`,
+      type: "SELL",
+      market,
+      qty: position.qty,
+      price,
+      krw: value,
+      pnl,
+      probability: safeNumber(signal?.probability),
+      createdAt: new Date().toISOString(),
+    };
+
+    updateAccount({
+      cash: live.cash,
+      positions: live.positions.filter((p) => p.market !== market),
+      history: [trade, ...live.history],
+    });
+
+    addLog(
+      "SELL",
+      `LIVE SELL ${liveExchange.toUpperCase()} ${order.symbol || market} / ${reason} / pnl ${pnl >= 0 ? "+" : ""}${formatKrw(pnl)}`,
+    );
+    void sendTelegramAlert({
+      type: "SELL",
+      market: market.replace("KRW-", ""),
+      exitPrice: price,
+      pnl: pnlPct,
+    });
+
+    return true;
   };
 
   const refreshSignals = async () => {
@@ -257,15 +818,22 @@ export default function ExecutionPage() {
       const list = Array.isArray(data) ? data : [];
 
       setSignals(list);
+      void persistAiDecisionLogs(list as AiSignal[]);
 
-      const active = list.filter((s) => safeNumber(s.signal) === 1);
+      const active = list.filter(isTradeTriggerSignal);
       addLog(
-        `📡 AI signal updated / ${active.length} buy signal / ${list.length} markets`,
+        "INFO",
+        `AI signal updated / ${active.length} trigger signal / ${list.length} markets / min confidence ${confidenceTriggerPct}%`,
       );
 
       return list as AiSignal[];
-    } catch (error) {
-      addLog("❌ AI signal fetch failed. Flask 서버 확인 필요");
+    } catch {
+      addLog("ERROR", "AI signal fetch failed. Check the Flask AI server.");
+      void persistTradeLog({
+        side: "ERROR",
+        market: "AI",
+        signal: "ERROR",
+      });
       return [];
     }
   };
@@ -278,30 +846,30 @@ export default function ExecutionPage() {
   const executePaperBuy = (signal: AiSignal, krw: number) => {
     const live = loadAccount();
 
-    if (tradeMode !== "PAPER") {
-      addLog("⚠️ Live mode is locked. 현재는 가상매매만 허용");
+    if (tradeModeRef.current !== "PAPER") {
+      addLog("ERROR", "PAPER buy is blocked while LIVE mode is selected");
       return false;
     }
 
     if (hasPosition(signal.market, live)) {
-      addLog(`⚠️ already holding ${signal.market}`);
+      addLog("INFO", `already holding ${signal.market}`);
       return false;
     }
 
     if (live.positions.length >= safeNumber(maxPositions, 1)) {
-      addLog("⚠️ max positions reached");
+      addLog("INFO", "max positions reached");
       return false;
     }
 
     const price = safeNumber(signal.price);
     if (price <= 0) {
-      addLog(`❌ invalid price ${signal.market}`);
+      addLog("ERROR", `invalid price ${signal.market}`);
       return false;
     }
 
     const orderAmount = Math.min(krw, live.cash);
     if (orderAmount <= 0) {
-      addLog("⚠️ insufficient paper cash");
+      addLog("ERROR", "insufficient paper cash");
       return false;
     }
 
@@ -336,8 +904,21 @@ export default function ExecutionPage() {
     updateAccount(next);
 
     addLog(
-      `🟢 PAPER BUY ${signal.market} / ${formatKrw(orderAmount)} / prob ${formatProb(signal.probability)}`,
+      "BUY",
+      `PAPER BUY ${signal.market} / ${formatKrw(orderAmount)} / prob ${formatProb(signal.probability)}`,
     );
+    void executePaperDbOrder({
+      side: "BUY",
+      market: signal.market,
+      amount: orderAmount,
+      probability: safeNumber(signal.probability),
+    });
+    void sendTelegramAlert({
+      type: "BUY",
+      market: signal.market.replace("KRW-", ""),
+      price,
+      probability: safeNumber(signal.probability),
+    });
 
     return true;
   };
@@ -352,6 +933,8 @@ export default function ExecutionPage() {
     const price = safeNumber(signal?.price, position.avgPrice);
     const value = position.qty * price;
     const pnl = value - position.investedKrw;
+    const pnlPct =
+      position.investedKrw > 0 ? (pnl / position.investedKrw) * 100 : 0;
 
     const trade: TradeHistoryItem = {
       id: `${Date.now()}-${market}-SELL`,
@@ -374,8 +957,21 @@ export default function ExecutionPage() {
     updateAccount(next);
 
     addLog(
-      `🔴 PAPER SELL ${market} / ${reason} / pnl ${pnl >= 0 ? "+" : ""}${formatKrw(pnl)}`,
+      "SELL",
+      `PAPER SELL ${market} / ${reason} / pnl ${pnl >= 0 ? "+" : ""}${formatKrw(pnl)}`,
     );
+    void executePaperDbOrder({
+      side: "SELL",
+      market,
+      amount: value,
+      probability: safeNumber(signal?.probability),
+    });
+    void sendTelegramAlert({
+      type: "SELL",
+      market: market.replace("KRW-", ""),
+      exitPrice: price,
+      pnl: pnlPct,
+    });
 
     return true;
   };
@@ -397,34 +993,68 @@ export default function ExecutionPage() {
     for (const position of live.positions) {
       const nowSignal = signalByMarket[position.market];
       const nowPrice = safeNumber(nowSignal?.price, position.avgPrice);
+      const positionValue = position.qty * nowPrice;
+      const pnl = positionValue - position.investedKrw;
       const pnlPct =
         position.avgPrice > 0
           ? ((nowPrice - position.avgPrice) / position.avgPrice) * 100
           : 0;
 
       if (pnlPct <= -safeNumber(stopLossPct, 3)) {
-        executePaperSell(position.market, `stop loss ${formatPct(pnlPct)}`);
+        if (tradeModeRef.current === "LIVE") {
+          await executeLiveSell(
+            position.market,
+            `stop loss ${formatPct(pnlPct)}`,
+          );
+        } else {
+          executePaperSell(position.market, `stop loss ${formatPct(pnlPct)}`);
+        }
         continue;
       }
 
       if (pnlPct >= safeNumber(takeProfitPct, 5)) {
-        executePaperSell(position.market, `take profit ${formatPct(pnlPct)}`);
+        if (tradeModeRef.current === "LIVE") {
+          await executeLiveSell(
+            position.market,
+            `take profit ${formatPct(pnlPct)}`,
+          );
+        } else {
+          executePaperSell(position.market, `take profit ${formatPct(pnlPct)}`);
+        }
         continue;
       }
 
       if (nowSignal && safeNumber(nowSignal.signal) === 0) {
         addLog(
-          `👀 HOLD ${position.market} / pnl ${formatPct(pnlPct)} / AI signal off`,
+          "INFO",
+          `HOLD ${position.market} / pnl ${formatPct(pnlPct)} / AI signal off`,
         );
+        void persistTradeLog({
+          side: "HOLD",
+          market: position.market,
+          signal: "HOLD",
+          probability: safeNumber(nowSignal.probability),
+          price: nowPrice,
+          pnl,
+        });
       } else {
         addLog(
-          `👀 HOLD ${position.market} / pnl ${formatPct(pnlPct)} / AI signal active`,
+          "INFO",
+          `HOLD ${position.market} / pnl ${formatPct(pnlPct)} / AI signal active`,
         );
+        void persistTradeLog({
+          side: "HOLD",
+          market: position.market,
+          signal: "HOLD",
+          probability: safeNumber(nowSignal?.probability),
+          price: nowPrice,
+          pnl,
+        });
       }
     }
 
     const candidates = latestSignals
-      .filter((s) => safeNumber(s.signal) === 1)
+      .filter(isTradeTriggerSignal)
       .sort((a, b) => safeNumber(b.probability) - safeNumber(a.probability));
 
     const current = loadAccount();
@@ -433,12 +1063,24 @@ export default function ExecutionPage() {
       if (current.positions.length >= safeNumber(maxPositions, 1)) break;
       if (hasPosition(signal.market)) continue;
 
-      executePaperBuy(signal, safeNumber(orderKrw, 0));
+      if (tradeModeRef.current === "LIVE") {
+        await executeLiveBuy(signal);
+      } else {
+        executePaperBuy(signal, safeNumber(orderKrw, 0));
+      }
       break;
     }
 
     if (candidates.length === 0) {
-      addLog("⏸ no AI buy signal. 신규 진입 없음");
+      addLog(
+        "INFO",
+        `no AI trigger signal. min confidence ${confidenceTriggerPct}%`,
+      );
+      void persistTradeLog({
+        side: "HOLD",
+        market: "AI",
+        signal: "HOLD",
+      });
     }
   };
 
@@ -448,8 +1090,8 @@ export default function ExecutionPage() {
       loopRef.current = null;
     }
 
-    if (tradeMode === "LIVE") {
-      addLog("⛔ Live trading is locked. 초기 모델은 PAPER 모드만 사용 권장");
+    if (tradeModeRef.current === "LIVE" && !liveTradingConfirmed) {
+      addLog("ERROR", "Enable LIVE trading confirmation before start");
       return;
     }
 
@@ -457,7 +1099,12 @@ export default function ExecutionPage() {
     statusRef.current = "RUNNING";
 
     addLog(
-      `🤖 PAPER engine started / order ${formatKrw(orderKrw)} / cycle ${cycleSec}s`,
+      "INFO",
+      `${tradeModeRef.current} engine started / ${
+        tradeModeRef.current === "LIVE"
+          ? `${liveExchange.toUpperCase()} amount ${safeNumber(liveOrderAmount).toLocaleString("ko-KR")}`
+          : `order ${formatKrw(orderKrw)}`
+      } / confidence ${confidenceTriggerPct}% / cycle ${cycleSec}s`,
     );
 
     await runOnce();
@@ -474,7 +1121,7 @@ export default function ExecutionPage() {
   const pauseAutoTrading = () => {
     setAutoStatus("PAUSED");
     statusRef.current = "PAUSED";
-    addLog("⏸ engine paused");
+    addLog("INFO", "engine paused");
   };
 
   const stopAutoTrading = () => {
@@ -485,18 +1132,22 @@ export default function ExecutionPage() {
 
     setAutoStatus("STOPPED");
     statusRef.current = "STOPPED";
-    addLog("⏹ engine stopped");
+    addLog("INFO", "engine stopped");
   };
 
-  const closeAllPositions = () => {
+  const closeAllPositions = async () => {
     const live = loadAccount();
 
     for (const position of live.positions) {
-      executePaperSell(position.market, "manual close all");
+      if (tradeModeRef.current === "LIVE") {
+        await executeLiveSell(position.market, "manual close all");
+      } else {
+        executePaperSell(position.market, "manual close all");
+      }
     }
   };
 
-  const resetAccount = () => {
+  const resetAccount = async () => {
     if (loopRef.current) clearInterval(loopRef.current);
 
     const fresh = getDefaultAccount();
@@ -505,8 +1156,112 @@ export default function ExecutionPage() {
     setAutoStatus("IDLE");
     statusRef.current = "IDLE";
     setLogs([]);
-    addLog("♻️ paper account reset");
+    pendingLogsRef.current = [];
+    addLog("INFO", "paper account reset");
+
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      await fetch("/api/paper/wallet", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          virtualBalance: 10_000_000,
+        }),
+      });
+    } catch {
+      addLog("ERROR", "paper account DB reset failed");
+    }
   };
+
+  useEffect(() => {
+    const pollTradingControl = async () => {
+      const token = getAccessToken();
+
+      if (!token) return;
+
+      try {
+        const res = await fetch("/api/trading-control", {
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!res.ok) return;
+
+        const data = (await res.json()) as {
+          commandId?: number;
+          lastCommand?:
+            | "START"
+            | "START_PAPER"
+            | "START_LIVE"
+            | "PAUSE"
+            | "STOP"
+            | "CLOSE_ALL"
+            | null;
+        };
+        const commandId = safeNumber(data.commandId, 0);
+
+        if (!data.lastCommand || commandId <= remoteCommandIdRef.current) {
+          return;
+        }
+
+        remoteCommandIdRef.current = commandId;
+
+        if (data.lastCommand === "START") {
+          addLog("INFO", "Telegram remote command: START");
+          await startAutoTrading();
+          return;
+        }
+
+        if (data.lastCommand === "START_PAPER") {
+          addLog("INFO", "Telegram remote command: START PAPER");
+          await saveTradeMode("PAPER");
+          await startAutoTrading();
+          return;
+        }
+
+        if (data.lastCommand === "START_LIVE") {
+          addLog("INFO", "Telegram remote command: START LIVE");
+          await saveTradeMode("LIVE");
+          await startAutoTrading();
+          return;
+        }
+
+        if (data.lastCommand === "PAUSE") {
+          addLog("INFO", "Telegram remote command: PAUSE");
+          pauseAutoTrading();
+          return;
+        }
+
+        if (data.lastCommand === "STOP") {
+          addLog("INFO", "Telegram remote command: STOP");
+          stopAutoTrading();
+          return;
+        }
+
+        if (data.lastCommand === "CLOSE_ALL") {
+          addLog("INFO", "Telegram remote command: CLOSE ALL");
+          await closeAllPositions();
+        }
+      } catch {
+        // Remote control polling should never block the trading UI.
+      }
+    };
+
+    const timer = setInterval(() => {
+      void pollTradingControl();
+    }, 2500);
+
+    void pollTradingControl();
+
+    return () => clearInterval(timer);
+  }, [tradeMode, liveTradingConfirmed, liveExchange, liveOrderAmount]);
 
   return (
     <div className="min-h-[calc(100dvh-96px)] space-y-5 bg-[#070B12] text-slate-100">
@@ -521,14 +1276,14 @@ export default function ExecutionPage() {
                 Upbit AI Paper Trading
               </h1>
               <p className="mt-2 text-sm text-slate-400">
-                Flask AI 모델의 실시간 신호를 받아 가상매매를 수행합니다. 초기
-                모델이므로 실거래 대신 PAPER 모드로 검증합니다.
+                Run AI-driven auto trading in PAPER or LIVE mode. PAPER mode
+                uses virtual KRW only, while LIVE mode requires explicit confirmation.
               </p>
             </div>
 
             <div className="flex rounded-2xl border border-slate-800 bg-[#111A2E] p-1">
               <button
-                onClick={() => setTradeMode("PAPER")}
+                onClick={() => void saveTradeMode("PAPER")}
                 className={`rounded-xl px-4 py-2 text-sm font-semibold ${
                   tradeMode === "PAPER"
                     ? "bg-emerald-500/20 text-emerald-300"
@@ -539,8 +1294,8 @@ export default function ExecutionPage() {
               </button>
               <button
                 onClick={() => {
-                  setTradeMode("LIVE");
-                  addLog("⚠️ Live mode selected but locked");
+                  void saveTradeMode("LIVE");
+                  addLog("INFO", "Live mode selected. Confirm LIVE trading before start");
                 }}
                 className={`rounded-xl px-4 py-2 text-sm font-semibold ${
                   tradeMode === "LIVE"
@@ -548,7 +1303,7 @@ export default function ExecutionPage() {
                     : "text-slate-400"
                 }`}
               >
-                Live Locked
+                Live
               </button>
             </div>
           </div>
@@ -598,7 +1353,8 @@ export default function ExecutionPage() {
                   </tr>
                 ) : (
                   signals.map((s) => {
-                    const active = safeNumber(s.signal) === 1;
+                    const active = isTradeTriggerSignal(s);
+                    const serverBuy = safeNumber(s.signal) === 1;
 
                     return (
                       <tr key={s.market} className="hover:bg-slate-900/70">
@@ -639,7 +1395,11 @@ export default function ExecutionPage() {
                                 : "border-slate-700 bg-slate-800/70 text-slate-400"
                             }`}
                           >
-                            {active ? "BUY" : "WAIT"}
+                            {active
+                              ? "TRIGGER"
+                              : serverBuy
+                                ? "LOW CONF"
+                                : "WAIT"}
                           </span>
                         </td>
                       </tr>
@@ -700,6 +1460,20 @@ export default function ExecutionPage() {
                 />
               </div>
               <div>
+                <label className="text-xs text-slate-400">
+                  AI Confidence %
+                </label>
+                <input
+                  value={aiConfidencePct}
+                  onChange={(e) => setAiConfidencePct(e.target.value)}
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  className="mt-2 h-11 w-full rounded-2xl border border-slate-800 bg-[#111A2E] px-3 text-sm outline-none"
+                />
+              </div>
+              <div>
                 <label className="text-xs text-slate-400">Stop Loss %</label>
                 <input
                   value={stopLossPct}
@@ -707,6 +1481,27 @@ export default function ExecutionPage() {
                   type="number"
                   className="mt-2 h-11 w-full rounded-2xl border border-slate-800 bg-[#111A2E] px-3 text-sm outline-none"
                 />
+              </div>
+              <div className="col-span-2 rounded-2xl border border-slate-800 bg-[#111A2E] p-4">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>AI trade trigger</span>
+                  <span className="font-semibold text-emerald-300">
+                    {confidenceTriggerPct.toFixed(0)}%
+                  </span>
+                </div>
+                <input
+                  value={confidenceTriggerPct}
+                  onChange={(e) => setAiConfidencePct(e.target.value)}
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  className="mt-3 w-full accent-emerald-400"
+                />
+                <div className="mt-2 text-xs leading-relaxed text-slate-500">
+                  AI signal must be BUY and probability must be at least this
+                  value before PAPER or LIVE auto trading enters a position.
+                </div>
               </div>
               <div className="col-span-2">
                 <label className="text-xs text-slate-400">Take Profit %</label>
@@ -717,6 +1512,51 @@ export default function ExecutionPage() {
                   className="mt-2 h-11 w-full rounded-2xl border border-slate-800 bg-[#111A2E] px-3 text-sm outline-none"
                 />
               </div>
+              {tradeMode === "LIVE" && (
+                <>
+                  <div>
+                    <label className="text-xs text-slate-400">
+                      Live Exchange
+                    </label>
+                    <select
+                      value={liveExchange}
+                      onChange={(e) =>
+                        setLiveExchange(e.target.value as ExchangeName)
+                      }
+                      className="mt-2 h-11 w-full rounded-2xl border border-slate-800 bg-[#111A2E] px-3 text-sm outline-none"
+                    >
+                      <option value="upbit">Upbit</option>
+                      <option value="binance">Binance</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400">
+                      Live Order Amount
+                    </label>
+                    <input
+                      value={liveOrderAmount}
+                      onChange={(e) => setLiveOrderAmount(e.target.value)}
+                      type="number"
+                      min={0}
+                      className="mt-2 h-11 w-full rounded-2xl border border-slate-800 bg-[#111A2E] px-3 text-sm outline-none"
+                    />
+                  </div>
+                  <label className="col-span-2 flex items-start gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+                    <input
+                      type="checkbox"
+                      checked={liveTradingConfirmed}
+                      onChange={(e) =>
+                        setLiveTradingConfirmed(e.target.checked)
+                      }
+                      className="mt-1"
+                    />
+                    <span>
+                      I understand LIVE mode sends real market orders to my
+                      exchange account.
+                    </span>
+                  </label>
+                </>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -747,18 +1587,18 @@ export default function ExecutionPage() {
             </div>
 
             <button
-              onClick={resetAccount}
+              onClick={() => void resetAccount()}
               className="h-11 w-full rounded-2xl border border-slate-700 bg-[#111A2E] text-sm font-semibold text-slate-300 hover:bg-slate-800"
             >
               Reset Paper Account
             </button>
 
             <div className="rounded-2xl border border-slate-800 bg-[#111A2E] p-4 text-sm text-slate-400">
-              Best Signal:{" "}
+              Best Trigger:{" "}
               <span className="font-semibold text-slate-100">
                 {bestSignal
                   ? `${bestSignal.market} / ${formatProb(bestSignal.probability)}`
-                  : "No Buy Signal"}
+                  : "No Trigger Signal"}
               </span>
             </div>
           </div>
@@ -766,7 +1606,10 @@ export default function ExecutionPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <Card title="Paper Portfolio" className="xl:col-span-8">
+        <Card
+          title={tradeMode === "LIVE" ? "Live Position Tracker" : "Paper Portfolio"}
+          className="xl:col-span-8"
+        >
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Stat label="Cash" value={formatKrw(account?.cash)} />
             <Stat label="Invested" value={formatKrw(investedKrw)} />
@@ -784,7 +1627,7 @@ export default function ExecutionPage() {
           <div className="space-y-3">
             {(account?.positions ?? []).length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-700 p-10 text-center text-sm text-slate-500">
-                no active paper position
+                no active position
               </div>
             ) : (
               account!.positions.map((p) => {
@@ -824,7 +1667,13 @@ export default function ExecutionPage() {
                       </div>
                     </div>
                     <button
-                      onClick={() => executePaperSell(p.market, "manual")}
+                      onClick={() => {
+                        if (tradeModeRef.current === "LIVE") {
+                          void executeLiveSell(p.market, "manual");
+                        } else {
+                          executePaperSell(p.market, "manual");
+                        }
+                      }}
                       className="rounded-xl border border-rose-500/30 bg-rose-500/15 px-3 py-2 text-sm font-semibold text-rose-300"
                     >
                       Sell
@@ -836,16 +1685,32 @@ export default function ExecutionPage() {
           </div>
         </Card>
 
-        <Card title="Activity Log" className="xl:col-span-4">
+        <Card
+          title="Activity Log"
+          className="xl:col-span-4"
+          right={
+            <span className="rounded-lg border border-slate-700 bg-slate-800/70 px-2 py-1 text-xs text-slate-400">
+              {getLogUpdateIntervalLabel(logUpdateInterval)}
+            </span>
+          }
+        >
           <div className="max-h-[520px] overflow-auto text-xs text-slate-300">
             {logs.length === 0 ? (
               <div className="text-slate-500">no activity yet</div>
             ) : (
               <ul className="space-y-2">
-                {logs.map((log, idx) => (
-                  <li key={idx} className="whitespace-pre-wrap">
-                    <span className="text-slate-500">• </span>
-                    {log}
+                {logs.map((log) => (
+                  <li
+                    key={log.id}
+                    className="grid grid-cols-[72px_48px_1fr] gap-2 whitespace-pre-wrap rounded-xl border border-slate-800 bg-[#111A2E]/70 px-3 py-2"
+                  >
+                    <span className="font-mono text-slate-500">
+                      [{log.time}]
+                    </span>
+                    <span className={`font-bold ${getLogTypeClass(log.type)}`}>
+                      {log.type}
+                    </span>
+                    <span className="text-slate-300">{log.message}</span>
                   </li>
                 ))}
               </ul>

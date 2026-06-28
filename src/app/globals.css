@@ -24,3 +24,37 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+html button:not(:disabled),
+html a[href],
+html summary,
+html [role="button"],
+html input[type="button"]:not(:disabled),
+html input[type="submit"]:not(:disabled),
+html input[type="reset"]:not(:disabled) {
+  cursor: pointer !important;
+  transition:
+    opacity 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease !important;
+}
+
+html button:hover:not(:disabled),
+html a[href]:hover,
+html summary:hover,
+html [role="button"]:hover,
+html input[type="button"]:hover:not(:disabled),
+html input[type="submit"]:hover:not(:disabled),
+html input[type="reset"]:hover:not(:disabled) {
+  opacity: 0.86 !important;
+}
+
+html button:disabled,
+html input[type="button"]:disabled,
+html input[type="submit"]:disabled,
+html input[type="reset"]:disabled {
+  cursor: not-allowed !important;
+}

@@ -84,7 +84,29 @@ https://auto-quant-trading-challenge-gwhj.vercel.app/
 
 _260612_
 로딩오버레이 추가
+Loading Context 전역 상태 관리 추가
+전체 페이지 공통 로딩 구조 적용
 
-_260613 todo_
+_260613_
+Telegram Bot 연동
+Telegram 알림 시스템 구축
+Balance / Status / Position 조회 기능 추가
+Start / Pause / Stop / Close All 제어 기능 추가
+
+Telegram 전용 인증 구조 추가
+JWT 의존성 제거
+로그인 사용자별 Telegram ID 매핑 구조 설계
+비로그인 사용자 메뉴 제한 구조 설계
+
+Paper Trading 기능 설계
+Live / Paper 모드 분리 구조 설계
+가상 자산 계좌 시스템 설계
+
+Trade Logs 시스템 설계
+AI Decision Logs 시스템 설계
+실시간 로그 조회 기능 설계
+중요 이벤트 Telegram 알림 연동 설계
+
+_todo_
 컨피던스 컨트롤 트리거 만들기
-자동매매 로그 커스텀 트리거 만들기
+24시간 자동매매 서버 구조 설계

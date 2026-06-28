@@ -1,109 +1,157 @@
 import { NextRequest, NextResponse } from "next/server";
-import jwt from "jsonwebtoken";
 import { prisma } from "@/lib/prisma";
+import { getRequestUserId } from "@/lib/auth/request-user";
 
-type JwtPayload = {
-  id?: string;
-  userId?: string;
-  email?: string;
+const DEFAULT_PAPER_BALANCE = 10_000_000;
+
+type PaperAccountDelegate = {
+  upsert: (args: {
+    where: { userId: string };
+    update: Record<string, never>;
+    create: { userId: string; virtualBalance: number; virtualPnl?: number };
+  }) => Promise<{ virtualBalance: number; virtualPnl: number }>;
+  update: (args: {
+    where: { userId: string };
+    data: { virtualBalance?: number; virtualPnl?: number };
+  }) => Promise<{ virtualBalance: number; virtualPnl: number }>;
 };
 
-function getUserId(req: NextRequest) {
-  const authToken = req.headers.get("authorization")?.replace("Bearer ", "");
-  const cookieToken = req.cookies.get("token")?.value;
-  const token = authToken || cookieToken;
+type TradeLogDelegate = {
+  create: (args: {
+    data: {
+      userId: string;
+      mode: "PAPER";
+      market: string;
+      side: string;
+      signal: string;
+      probability?: number | null;
+      price?: number | null;
+      entryPrice?: number | null;
+      exitPrice?: number | null;
+      pnl?: number | null;
+    };
+  }) => Promise<unknown>;
+};
 
-  if (!token) return null;
+type PrismaWithPaperTrading = typeof prisma & {
+  paperAccount: PaperAccountDelegate;
+  tradeLog: TradeLogDelegate;
+};
 
-  const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
-
-  return decoded.id || decoded.userId || null;
+function normalizeSide(value: string) {
+  const side = value.toUpperCase().trim();
+  return side === "BUY" || side === "SELL" ? side : null;
 }
 
-async function getMarketPrice(symbol: string) {
+function toBinanceSymbol(market: string) {
+  const raw = market.toUpperCase().trim();
+  if (raw.includes("-")) {
+    const [, base] = raw.split("-");
+    return `${base}USDT`;
+  }
+  if (raw.endsWith("USDT")) return raw;
+  if (raw.endsWith("KRW")) return `${raw.replace("KRW", "")}USDT`;
+  return `${raw}USDT`;
+}
+
+async function getMarketPrice(market: string) {
+  const raw = market.toUpperCase().trim();
+
+  if (raw.startsWith("KRW-")) {
+    const res = await fetch(`https://api.upbit.com/v1/ticker?markets=${raw}`, {
+      cache: "no-store",
+    });
+    const data = (await res.json()) as Array<{ trade_price?: number }>;
+    return Number(data?.[0]?.trade_price || 0);
+  }
+
+  const symbol = toBinanceSymbol(raw);
   const res = await fetch(
     `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`,
-    {
-      cache: "no-store",
-    },
+    { cache: "no-store" },
   );
-
-  const data = await res.json();
-
+  const data = (await res.json()) as { price?: string };
   return Number(data.price || 0);
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const userId = getUserId(req);
+    const userId = getRequestUserId(req);
 
     if (!userId) {
-      return NextResponse.json({ error: "로그인 필요" }, { status: 401 });
+      return NextResponse.json({ error: "Login required" }, { status: 401 });
     }
 
-    const body = await req.json();
-
-    const exchange = String(body.exchange || "binance").toLowerCase();
-    const symbol = String(body.symbol || "").toUpperCase();
-    const side = String(body.side || "").toUpperCase();
+    const body = (await req.json()) as {
+      exchange?: string;
+      symbol?: string;
+      market?: string;
+      side?: string;
+      amount?: number;
+      probability?: number;
+    };
+    const exchange = String(body.exchange || "paper").toLowerCase();
+    const market = String(body.market || body.symbol || "").toUpperCase();
+    const side = normalizeSide(String(body.side || ""));
     const amount = Number(body.amount || 0);
+    const probability = Number(body.probability);
 
-    if (!symbol || !["BUY", "SELL"].includes(side)) {
-      return NextResponse.json({ error: "잘못된 주문 요청" }, { status: 400 });
+    if (!market || !side) {
+      return NextResponse.json({ error: "Invalid paper order" }, { status: 400 });
     }
 
     if (!Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ error: "amount 값 오류" }, { status: 400 });
+      return NextResponse.json({ error: "amount must be greater than 0" }, { status: 400 });
     }
 
-    const wallet = await prisma.paperWallet.findUnique({
+    const db = prisma as PrismaWithPaperTrading;
+    const account = await db.paperAccount.upsert({
       where: { userId },
+      update: {},
+      create: {
+        userId,
+        virtualBalance: DEFAULT_PAPER_BALANCE,
+        virtualPnl: 0,
+      },
     });
-
-    if (!wallet) {
-      return NextResponse.json(
-        { error: "가상 지갑이 없습니다." },
-        { status: 400 },
-      );
-    }
-
-    const marketPrice = await getMarketPrice(symbol);
+    const marketPrice = await getMarketPrice(market);
 
     if (!marketPrice || marketPrice <= 0) {
-      return NextResponse.json({ error: "현재가 조회 실패" }, { status: 500 });
+      await db.tradeLog.create({
+        data: {
+          userId,
+          mode: "PAPER",
+          market,
+          side: "ERROR",
+          signal: "ERROR",
+          probability: Number.isFinite(probability) ? probability : null,
+          price: null,
+        },
+      });
+
+      return NextResponse.json({ error: "Market price unavailable" }, { status: 500 });
     }
 
-    // BUY
     if (side === "BUY") {
-      if (wallet.cash < amount) {
-        return NextResponse.json({ error: "잔액 부족" }, { status: 400 });
+      if (account.virtualBalance < amount) {
+        return NextResponse.json({ error: "Insufficient paper balance" }, { status: 400 });
       }
 
       const qty = amount / marketPrice;
-
       const existingPosition = await prisma.paperPosition.findFirst({
-        where: {
-          userId,
-          exchange,
-          symbol,
-        },
+        where: { userId, exchange, symbol: market },
       });
 
       if (existingPosition) {
         const totalQty = existingPosition.qty + qty;
-
         const totalInvested = existingPosition.invested + amount;
 
-        const avgPrice = totalInvested / totalQty;
-
         await prisma.paperPosition.update({
-          where: {
-            id: existingPosition.id,
-          },
+          where: { id: existingPosition.id },
           data: {
             qty: totalQty,
             invested: totalInvested,
-            avgPrice,
+            avgPrice: totalInvested / totalQty,
           },
         });
       } else {
@@ -111,7 +159,7 @@ export async function POST(req: NextRequest) {
           data: {
             userId,
             exchange,
-            symbol,
+            symbol: market,
             qty,
             invested: amount,
             avgPrice: marketPrice,
@@ -119,10 +167,10 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      await prisma.paperWallet.update({
+      await db.paperAccount.update({
         where: { userId },
         data: {
-          cash: wallet.cash - amount,
+          virtualBalance: account.virtualBalance - amount,
         },
       });
 
@@ -130,7 +178,7 @@ export async function POST(req: NextRequest) {
         data: {
           userId,
           exchange,
-          symbol,
+          symbol: market,
           side,
           type: "MARKET",
           status: "FILLED",
@@ -145,7 +193,7 @@ export async function POST(req: NextRequest) {
           userId,
           orderId: order.id,
           exchange,
-          symbol,
+          symbol: market,
           side,
           price: marketPrice,
           qty,
@@ -153,48 +201,48 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      await db.tradeLog.create({
+        data: {
+          userId,
+          mode: "PAPER",
+          market,
+          side: "BUY",
+          signal: "BUY",
+          probability: Number.isFinite(probability) ? probability : null,
+          price: marketPrice,
+          entryPrice: marketPrice,
+        },
+      });
+
       return NextResponse.json({
         success: true,
-        message: "매수 완료",
+        mode: "PAPER",
+        side: "BUY",
+        market,
+        price: marketPrice,
+        qty,
+        amount,
       });
     }
 
-    // SELL
     const position = await prisma.paperPosition.findFirst({
-      where: {
-        userId,
-        exchange,
-        symbol,
-      },
+      where: { userId, exchange, symbol: market },
     });
 
     if (!position) {
-      return NextResponse.json({ error: "포지션 없음" }, { status: 400 });
+      return NextResponse.json({ error: "No paper position" }, { status: 400 });
     }
 
-    const sellQty = amount / marketPrice;
-
-    if (sellQty > position.qty) {
-      return NextResponse.json({ error: "보유 수량 부족" }, { status: 400 });
-    }
-
+    const sellQty = Math.min(amount / marketPrice, position.qty);
     const remainQty = position.qty - sellQty;
-
     const sellValue = sellQty * marketPrice;
-
     const pnl = sellValue - position.avgPrice * sellQty;
 
     if (remainQty <= 0.0000001) {
-      await prisma.paperPosition.delete({
-        where: {
-          id: position.id,
-        },
-      });
+      await prisma.paperPosition.delete({ where: { id: position.id } });
     } else {
       await prisma.paperPosition.update({
-        where: {
-          id: position.id,
-        },
+        where: { id: position.id },
         data: {
           qty: remainQty,
           invested: position.avgPrice * remainQty,
@@ -202,10 +250,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    await prisma.paperWallet.update({
+    const nextBalance = account.virtualBalance + sellValue;
+    const nextPnl = account.virtualPnl + pnl;
+
+    await db.paperAccount.update({
       where: { userId },
       data: {
-        cash: wallet.cash + sellValue,
+        virtualBalance: nextBalance,
+        virtualPnl: nextPnl,
       },
     });
 
@@ -213,7 +265,7 @@ export async function POST(req: NextRequest) {
       data: {
         userId,
         exchange,
-        symbol,
+        symbol: market,
         side,
         type: "MARKET",
         status: "FILLED",
@@ -228,7 +280,7 @@ export async function POST(req: NextRequest) {
         userId,
         orderId: order.id,
         exchange,
-        symbol,
+        symbol: market,
         side,
         price: marketPrice,
         qty: sellQty,
@@ -237,14 +289,33 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    await db.tradeLog.create({
+      data: {
+        userId,
+        mode: "PAPER",
+        market,
+        side: "SELL",
+        signal: "SELL",
+        probability: Number.isFinite(probability) ? probability : null,
+        price: marketPrice,
+        exitPrice: marketPrice,
+        pnl,
+      },
+    });
+
     return NextResponse.json({
       success: true,
-      message: "매도 완료",
+      mode: "PAPER",
+      side: "SELL",
+      market,
+      price: marketPrice,
+      qty: sellQty,
+      amount: sellValue,
       pnl,
+      pnlRate: position.avgPrice > 0 ? (pnl / (position.avgPrice * sellQty)) * 100 : 0,
     });
   } catch (err) {
     console.error("PAPER_ORDER_POST_ERROR:", err);
-
-    return NextResponse.json({ error: "가상 주문 실패" }, { status: 500 });
+    return NextResponse.json({ error: "Paper order failed" }, { status: 500 });
   }
 }
