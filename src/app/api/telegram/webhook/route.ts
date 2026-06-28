@@ -15,8 +15,12 @@ async function telegram(method: string, body: unknown) {
 }
 
 export async function POST(req: NextRequest) {
+  console.log("===== WEBHOOK CALLED =====");
+
   try {
     const update = await req.json();
+
+    console.log(JSON.stringify(update, null, 2));
 
     const message = update.message;
     const callback = update.callback_query;
